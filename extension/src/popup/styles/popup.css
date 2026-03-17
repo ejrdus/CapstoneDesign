@@ -1,0 +1,127 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+.app {
+  width: 360px;
+  min-height: 400px;
+  background: #f8fafc;
+  color: #1e293b;
+}
+
+.app-header {
+  background: #1e293b;
+  color: white;
+  padding: 16px;
+}
+
+.app-header h1 {
+  font-size: 16px;
+  margin-bottom: 10px;
+}
+
+.tab-nav {
+  display: flex;
+  gap: 8px;
+}
+
+.tab-nav button {
+  background: transparent;
+  color: #94a3b8;
+  border: none;
+  padding: 6px 12px;
+  cursor: pointer;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.tab-nav button.active {
+  background: #334155;
+  color: white;
+}
+
+.analysis-status {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  padding: 12px;
+}
+
+.status-card {
+  text-align: center;
+  padding: 10px 4px;
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.status-number { display: block; font-size: 20px; font-weight: 700; }
+.status-label { font-size: 11px; color: #64748b; }
+.status-card.danger .status-number { color: #ef4444; }
+.status-card.caution .status-number { color: #f59e0b; }
+.status-card.safe .status-number { color: #10b981; }
+
+.code-preview {
+  margin: 4px 12px;
+  background: white;
+  border-radius: 8px;
+  border-left: 4px solid #e2e8f0;
+  overflow: hidden;
+}
+
+.code-preview.danger { border-left-color: #ef4444; }
+.code-preview.caution { border-left-color: #f59e0b; }
+.code-preview.safe { border-left-color: #10b981; }
+
+.code-preview-header {
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.risk-badge {
+  color: white;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.code-language {
+  background: #e2e8f0;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+.code-time { margin-left: auto; color: #94a3b8; font-size: 11px; }
+
+.code-preview-body {
+  padding: 10px 12px;
+  border-top: 1px solid #f1f5f9;
+  font-size: 12px;
+  color: #475569;
+}
+
+.settings { padding: 16px; }
+.setting-item { margin-bottom: 16px; }
+.setting-item label { display: block; font-size: 13px; margin-bottom: 4px; font-weight: 500; }
+.setting-item input[type="text"] {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.save-btn {
+  width: 100%;
+  padding: 10px;
+  background: #1e293b;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+}
