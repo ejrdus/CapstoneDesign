@@ -22,7 +22,7 @@
         "https://gemini.google.com/*"
       ],
       "js": ["content/index.js"],
-      "css": [],
+      "css": ["content/content.css"],
       "run_at": "document_idle"
     }
   ],

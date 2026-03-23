@@ -38,6 +38,7 @@ module.exports = {
       patterns: [
         { from: 'manifest.json', to: 'manifest.json' },
         { from: 'public', to: '.' },
+        { from: 'src/content/content.css', to: 'content/content.css' },
       ],
     }),
   ],
