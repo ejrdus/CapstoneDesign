@@ -49,29 +49,32 @@ export function applyPendingBlur(blurTarget, blockId) {
  * 분석 완료 후 결과에 따라 블러 해제/유지 처리
  *
  * @param {string} blockId - 블록 ID
- * @param {Object} result - { riskLevel, category, reason }
+ * @param {Object} result - { riskLevel, category, reason, details }
  */
 export function applyAnalysisResult(blockId, result) {
   const blockState = blockStates.get(blockId);
   if (!blockState) return;
 
   const { blurTarget, overlay } = blockState;
-  const { riskLevel, category, reason } = result;
+  const { riskLevel, category, reason, details } = result;
 
   // 기존 스캐닝 배너 제거
   if (overlay && overlay.parentElement) {
     overlay.remove();
   }
 
+  // details에서 위협 증거(evidence) 추출
+  const threats = (details && details.threats) || [];
+
   switch (riskLevel) {
     case 'safe':
       handleSafe(blurTarget, blockId, category, reason);
       break;
     case 'caution':
-      handleCaution(blurTarget, blockId, category, reason);
+      handleCaution(blurTarget, blockId, category, reason, threats);
       break;
     case 'danger':
-      handleDanger(blurTarget, blockId, category, reason);
+      handleDanger(blurTarget, blockId, category, reason, threats);
       break;
     default:
       // unknown / error → 블러 해제하되 경고
@@ -110,8 +113,10 @@ function handleSafe(blurTarget, blockId, category, reason) {
 
 // ─── caution: 블러 해제 + 경고 배너 유지 ─────────────────────
 
-function handleCaution(blurTarget, blockId, category, reason) {
+function handleCaution(blurTarget, blockId, category, reason, threats) {
   removeBlur(blurTarget);
+
+  const evidenceHtml = buildEvidenceHtml(threats);
 
   const banner = document.createElement('div');
   banner.className = 'asm-result-banner asm-result-caution';
@@ -122,6 +127,7 @@ function handleCaution(blurTarget, blockId, category, reason) {
       <div class="asm-banner-detail">
         <strong>주의</strong> — ${escapeHtml(category)}
         <p class="asm-banner-reason">${escapeHtml(reason)}</p>
+        ${evidenceHtml}
       </div>
       <button class="asm-dismiss-btn" title="닫기">✕</button>
     </div>
@@ -135,14 +141,19 @@ function handleCaution(blurTarget, blockId, category, reason) {
     banner.classList.add('asm-fade-out');
     setTimeout(() => { if (banner.parentElement) banner.remove(); }, 300);
   });
+
+  // 증거 토글 버튼
+  setupEvidenceToggle(banner);
 }
 
 // ─── danger: 블러 유지 + 차단 오버레이 + 확인 버튼 ───────────
 
-function handleDanger(blurTarget, blockId, category, reason) {
+function handleDanger(blurTarget, blockId, category, reason, threats) {
   // 블러 유지! pending → danger 클래스로 전환
   blurTarget.classList.remove('asm-blur-pending');
   blurTarget.classList.add('asm-blur-danger');
+
+  const evidenceHtml = buildEvidenceHtml(threats);
 
   const overlay = document.createElement('div');
   overlay.className = 'asm-result-banner asm-result-danger';
@@ -153,6 +164,7 @@ function handleDanger(blurTarget, blockId, category, reason) {
       <div class="asm-banner-detail">
         <strong>위험한 코드가 감지되었습니다</strong> — ${escapeHtml(category)}
         <p class="asm-banner-reason">${escapeHtml(reason)}</p>
+        ${evidenceHtml}
       </div>
     </div>
     <div class="asm-danger-actions">
@@ -179,9 +191,67 @@ function handleDanger(blurTarget, blockId, category, reason) {
       '<span class="asm-revealed-label">⚠️ 사용자가 표시를 허용했습니다</span>';
     blockStates.set(blockId, { ...blockStates.get(blockId), state: 'revealed' });
   });
+
+  // 증거 토글 버튼
+  setupEvidenceToggle(overlay);
 }
 
 // ─── 유틸리티 ────────────────────────────────────────────────
+
+/**
+ * 위협 증거(evidence)를 HTML로 변환
+ * 설명 가능한 분석(Explainable Analysis) — 코드 라인 단위 근거 표시
+ *
+ * @param {Array} threats - LLM이 반환한 위협 목록
+ * @returns {string} HTML 문자열
+ */
+function buildEvidenceHtml(threats) {
+  if (!threats || threats.length === 0) return '';
+
+  const items = threats
+    .filter((t) => t.evidence)
+    .map((t) => {
+      const location = t.lineHint ? `<span class="asm-evidence-location">${escapeHtml(t.lineHint)}</span>` : '';
+      return `
+        <div class="asm-evidence-item">
+          <div class="asm-evidence-header">
+            <span class="asm-evidence-type">${escapeHtml(t.category || t.type)}</span>
+            ${location}
+          </div>
+          <code class="asm-evidence-code">${escapeHtml(t.evidence)}</code>
+          <p class="asm-evidence-desc">${escapeHtml(t.description)}</p>
+        </div>
+      `;
+    })
+    .join('');
+
+  if (!items) return '';
+
+  return `
+    <div class="asm-evidence-section">
+      <button class="asm-evidence-toggle">위험 근거 상세보기 ▼</button>
+      <div class="asm-evidence-list" style="display:none;">
+        ${items}
+      </div>
+    </div>
+  `;
+}
+
+/**
+ * 증거 상세보기 토글 버튼 이벤트 설정
+ */
+function setupEvidenceToggle(container) {
+  const toggleBtn = container.querySelector('.asm-evidence-toggle');
+  if (!toggleBtn) return;
+
+  toggleBtn.addEventListener('click', () => {
+    const list = container.querySelector('.asm-evidence-list');
+    if (!list) return;
+    const isHidden = list.style.display === 'none';
+    list.style.display = isHidden ? 'block' : 'none';
+    toggleBtn.textContent = isHidden ? '위험 근거 접기 ▲' : '위험 근거 상세보기 ▼';
+  });
+}
 
 /**
  * 블러 효과 제거

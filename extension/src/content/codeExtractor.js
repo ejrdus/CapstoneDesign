@@ -11,9 +11,14 @@
 import { applyPendingBlur } from './overlay';
 
 const CODE_BLOCK_SELECTORS = {
-  chatgpt: 'pre code, .code-block__code',
-  claude: 'pre code, .code-block',
-  gemini: 'pre code, .code-container',
+  // ChatGPT: 2024~2026 다양한 DOM 구조 대응
+  chatgpt: 'pre code, pre > code, div[class*="code"] code, .code-block__code, .markdown pre',
+  // Claude
+  claude: 'pre code, .code-block pre, .code-block code',
+  // Gemini
+  gemini: 'pre code, .code-container code, code-block code',
+  // 범용 fallback
+  fallback: 'pre:has(code)',
 };
 
 const ALL_SELECTORS = Object.values(CODE_BLOCK_SELECTORS).join(', ');
@@ -69,11 +74,37 @@ export function extractNewCodeBlocks() {
   const codeBlocks = [];
   const elements = document.querySelectorAll(ALL_SELECTORS);
 
+  console.log(`[AI Script Monitor] 코드 블록 검색 — 선택자: ${ALL_SELECTORS}`);
+  console.log(`[AI Script Monitor] 발견된 요소 수: ${elements.length}`);
+
+  // fallback: 선택자로 못 찾으면 pre 태그 직접 검색
+  if (elements.length === 0) {
+    const preTags = document.querySelectorAll('pre');
+    console.log(`[AI Script Monitor] fallback pre 태그 수: ${preTags.length}`);
+    preTags.forEach((pre) => {
+      if (isProcessed(pre)) return;
+      const code = pre.textContent.trim();
+      if (code.length > 5) {
+        const blockId = markProcessed(pre);
+        const blurTarget = pre;
+        applyPendingBlur(blurTarget, blockId);
+        codeBlocks.push({
+          code,
+          language: detectLanguageFromDOM(pre),
+          element: pre,
+          blurTarget,
+          blockId,
+        });
+      }
+    });
+    return codeBlocks;
+  }
+
   elements.forEach((el) => {
     if (isProcessed(el)) return;
 
     const code = el.textContent.trim();
-    if (code.length > 10) {
+    if (code.length > 5) {
       const blockId = markProcessed(el);
       const blurTarget = getBlurTarget(el);
 
@@ -103,27 +134,37 @@ function findCodeBlocksInNode(node) {
   if (node.nodeType !== Node.ELEMENT_NODE) return results;
 
   // 노드 자체가 코드 블록인 경우
-  if (node.matches && node.matches(ALL_SELECTORS) && !isProcessed(node)) {
+  const matchesSelector = node.matches && (
+    node.matches(ALL_SELECTORS) || node.tagName === 'PRE' || node.tagName === 'CODE'
+  );
+
+  if (matchesSelector && !isProcessed(node)) {
     const code = node.textContent.trim();
-    if (code.length > 10) {
+    if (code.length > 5) {
       const blockId = markProcessed(node);
       const blurTarget = getBlurTarget(node);
       applyPendingBlur(blurTarget, blockId);
       results.push({ code, language: detectLanguageFromDOM(node), element: node, blurTarget, blockId });
+      console.log(`[AI Script Monitor] 새 코드 블록 감지: ${code.substring(0, 50)}...`);
     }
   }
 
   // 노드의 자식 중 코드 블록이 있는 경우
   if (node.querySelectorAll) {
-    const children = node.querySelectorAll(ALL_SELECTORS);
+    // 확장된 선택자 + pre 태그도 검색
+    const extendedSelector = ALL_SELECTORS + ', pre';
+    const children = node.querySelectorAll(extendedSelector);
     children.forEach((el) => {
       if (isProcessed(el)) return;
+      // pre 안에 이미 처리된 code가 있으면 스킵
+      if (el.tagName === 'PRE' && el.querySelector('[data-asm-id]')) return;
       const code = el.textContent.trim();
-      if (code.length > 10) {
+      if (code.length > 5) {
         const blockId = markProcessed(el);
         const blurTarget = getBlurTarget(el);
         applyPendingBlur(blurTarget, blockId);
         results.push({ code, language: detectLanguageFromDOM(el), element: el, blurTarget, blockId });
+        console.log(`[AI Script Monitor] 새 코드 블록 감지: ${code.substring(0, 50)}...`);
       }
     });
   }

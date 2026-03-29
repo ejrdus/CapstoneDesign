@@ -185,6 +185,83 @@
   color: #92400e;
 }
 
+/* ─── 증거(Evidence) 상세보기 ────────────────────────────────── */
+
+.asm-evidence-section {
+  margin-top: 8px;
+}
+
+.asm-evidence-toggle {
+  background: none;
+  border: none;
+  color: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 0;
+  opacity: 0.75;
+  text-decoration: underline;
+}
+
+.asm-evidence-toggle:hover {
+  opacity: 1;
+}
+
+.asm-evidence-list {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.asm-evidence-item {
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.asm-evidence-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.asm-evidence-type {
+  font-weight: 700;
+  font-size: 11px;
+  background: rgba(0, 0, 0, 0.1);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+.asm-evidence-location {
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+.asm-evidence-code {
+  display: block;
+  background: rgba(0, 0, 0, 0.08);
+  padding: 6px 8px;
+  border-radius: 3px;
+  font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 4px 0;
+  border-left: 3px solid currentColor;
+}
+
+.asm-evidence-desc {
+  margin: 4px 0 0 0;
+  font-size: 11px;
+  opacity: 0.85;
+  line-height: 1.4;
+}
+
 /* ─── 페이드아웃 애니메이션 ───────────────────────────────────── */
 
 .asm-fade-out {
