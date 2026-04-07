@@ -5,7 +5,8 @@
 
 /* ─── 블러 상태 ─────────────────────────────────────────────── */
 
-/* 분석 대기 중 블러 (감지 즉시 적용) */
+/* React 재렌더링 방어용 — data 속성 기반 셀렉터 (클래스보다 더 견고) */
+[data-asm-blur="pending"],
 .asm-blur-pending {
   filter: blur(8px) !important;
   user-select: none !important;
@@ -14,13 +15,22 @@
   position: relative;
 }
 
-/* 위험 코드 블러 (분석 완료 후 danger 판정) */
+[data-asm-blur="danger"],
 .asm-blur-danger {
   filter: blur(10px) !important;
   user-select: none !important;
   pointer-events: none !important;
   transition: filter 0.3s ease;
   position: relative;
+}
+
+/* 자손까지 확실히 흐리게 (filter는 자손까지 시각적으로 적용되지만,
+   syntax-highlight 자식이 별도 filter를 가질 가능성을 차단) */
+[data-asm-blur="pending"] *,
+[data-asm-blur="danger"] *,
+.asm-blur-pending *,
+.asm-blur-danger * {
+  filter: none !important;
 }
 
 /* ─── 배너 공통 ─────────────────────────────────────────────── */
