@@ -15,6 +15,10 @@ import { extractNewCodeBlocks, observeCodeBlocks, observeAssistantMessages, ensu
 const ASSISTANT_MSG_SELECTOR = '[data-message-author-role="assistant"], article[data-testid^="conversation-turn"]';
 import { detectLanguage } from './languageDetector';
 import { applyAnalysisResult, applyMessageBlur, removeMessageBlur, markMessageDanger } from './overlay';
+import { detectAIService } from '../utils/constants';
+
+// 현재 페이지의 AI 서비스 감지
+const currentAIService = detectAIService();
 
 // ─── 메시지 단위 블러 상태 관리 ───────────────────────────────
 // AI 응답 메시지 전체에 블러를 입히고, 스트리밍이 끝나면(idle) 풀어준다.
@@ -177,6 +181,7 @@ async function executeAnalysis(blockId, code, language) {
         code,
         language: detectedLang,
         blockId,
+        aiService: currentAIService,
       },
     });
 
@@ -198,7 +203,7 @@ async function executeAnalysis(blockId, code, language) {
     // Popup에 상태 업데이트
     chrome.runtime.sendMessage({
       type: 'UPDATE_STATUS',
-      payload: { ...response, language: detectedLang, blockId },
+      payload: { ...response, language: detectedLang, blockId, aiService: currentAIService },
     });
   } catch (error) {
     console.error('[AI Script Monitor] 분석 오류:', error);

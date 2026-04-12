@@ -27,3 +27,23 @@ export const AI_SERVICE_PATTERNS = [
   'claude.ai',
   'gemini.google.com',
 ];
+
+// AI 서비스 이름 매핑
+export const AI_SERVICE_NAMES = {
+  'chatgpt.com': 'ChatGPT',
+  'chat.openai.com': 'ChatGPT',
+  'claude.ai': 'Claude',
+  'gemini.google.com': 'Gemini',
+};
+
+/**
+ * 현재 URL에서 AI 서비스 이름을 감지
+ * @returns {string} AI 서비스 이름 (ChatGPT, Claude, Gemini, 또는 Unknown)
+ */
+export function detectAIService() {
+  const hostname = window.location.hostname;
+  for (const [pattern, name] of Object.entries(AI_SERVICE_NAMES)) {
+    if (hostname.includes(pattern)) return name;
+  }
+  return 'Unknown';
+}

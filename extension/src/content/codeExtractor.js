@@ -57,6 +57,10 @@ function isLikelyStreaming(msg) {
   // 페이지 로드 직후에 발견되는 건 무조건 historical (히스토리 lazy load 대응)
   if (Date.now() - pageLoadTime < PAGE_LOAD_GRACE_MS) return false;
 
+  // ChatGPT의 request placeholder는 실제 응답이 아님 — 무시
+  const messageId = msg.getAttribute('data-message-id') || '';
+  if (messageId.startsWith('request-placeholder')) return false;
+
   const text = (msg.textContent || '').trim();
   // 내용이 짧으면 스트리밍 시작 단계로 간주
   return text.length < STREAMING_TEXT_THRESHOLD;
@@ -112,8 +116,16 @@ export function observeAssistantMessages(onNewMessage, onMessageMutation) {
       }
     }
 
+    // 중첩 제거 — 부모-자식 관계의 요소가 있으면 가장 바깥 요소만 남김
+    const filtered = [...newMessages].filter((msg) => {
+      for (const other of newMessages) {
+        if (other !== msg && other.contains(msg)) return false;
+      }
+      return true;
+    });
+
     // 새 메시지 처리 — canonical key(data-message-id)로 중복 방지
-    for (const msg of newMessages) {
+    for (const msg of filtered) {
       const key = msg.getAttribute('data-message-id');
       // 이미 처리한 키면 마킹만 갱신하고 콜백은 호출하지 않음
       if (key && processedMessageKeys.has(key)) {
@@ -123,6 +135,8 @@ export function observeAssistantMessages(onNewMessage, onMessageMutation) {
         continue;
       }
       if (msg.hasAttribute('data-asm-msg-id')) continue;
+      // 이미 처리된 메시지 안에 중첩된 요소면 스킵
+      if (msg.closest && msg.parentElement && msg.parentElement.closest('[data-asm-msg-id]')) continue;
       const id = key || generateMessageId();
       msg.setAttribute('data-asm-msg-id', id);
       if (isLikelyStreaming(msg)) {
@@ -168,6 +182,8 @@ export function observeAssistantMessages(onNewMessage, onMessageMutation) {
         continue;
       }
       if (msg.hasAttribute('data-asm-msg-id')) continue;
+      // 이미 처리된 메시지 안에 중첩된 요소면 스킵
+      if (msg.parentElement && msg.parentElement.closest('[data-asm-msg-id]')) continue;
       const id = key || generateMessageId();
       msg.setAttribute('data-asm-msg-id', id);
       if (isLikelyStreaming(msg)) {

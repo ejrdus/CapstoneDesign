@@ -2,7 +2,11 @@
  * 요청 데이터 검증 모듈
  */
 
-const SUPPORTED_LANGUAGES = ['python', 'bash', 'javascript', 'powershell', 'unknown'];
+const SUPPORTED_LANGUAGES = [
+  'python', 'bash', 'javascript', 'typescript', 'powershell',
+  'java', 'c', 'cpp', 'go', 'ruby', 'php', 'rust', 'csharp',
+  'sql', 'html', 'css', 'unknown',
+];
 
 /**
  * /api/analyze 요청 바디 검증

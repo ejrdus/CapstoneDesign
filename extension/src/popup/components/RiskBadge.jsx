@@ -1,17 +1,17 @@
 import React from 'react';
 
 const BADGE_CONFIG = {
-  safe: { label: '안전', color: '#10b981' },
-  caution: { label: '주의', color: '#f59e0b' },
-  danger: { label: '위험', color: '#ef4444' },
-  unknown: { label: '알 수 없음', color: '#6b7280' },
+  safe: { label: '안전', className: 'safe' },
+  caution: { label: '주의', className: 'caution' },
+  danger: { label: '위험', className: 'danger' },
+  unknown: { label: '알 수 없음', className: 'unknown' },
 };
 
 export default function RiskBadge({ level }) {
   const config = BADGE_CONFIG[level] || BADGE_CONFIG.unknown;
 
   return (
-    <span className="risk-badge" style={{ background: config.color }}>
+    <span className={`risk-badge ${config.className}`}>
       {config.label}
     </span>
   );

@@ -10,7 +10,7 @@ export default function AnalysisStatus({ history }) {
     <div className="analysis-status">
       <div className="status-card">
         <span className="status-number">{total}</span>
-        <span className="status-label">분석 완료</span>
+        <span className="status-label">전체</span>
       </div>
       <div className="status-card danger">
         <span className="status-number">{dangers}</span>

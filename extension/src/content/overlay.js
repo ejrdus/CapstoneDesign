@@ -179,8 +179,9 @@ export function applyPendingBlur(blurTarget, blockId) {
     overlay: null,
   });
 
-  // "분석 중" 배너 삽입 (부모가 아직 없을 수 있으니 가드)
-  if (blurTarget.parentElement) {
+  // 메시지 단위 블러 배너가 이미 있으면 블록 배너 생략 (중복 방지)
+  const insideMessageBlur = blurTarget.closest && blurTarget.closest('[data-asm-msg-id]');
+  if (!insideMessageBlur && blurTarget.parentElement) {
     const banner = createScanningBanner(blockId);
     blurTarget.parentElement.insertBefore(banner, blurTarget);
     blockStates.get(blockId).overlay = banner;

@@ -9,7 +9,6 @@ export default function App() {
 
   useEffect(() => {
     loadHistory();
-    // storage 변경 감지
     chrome.storage.onChanged.addListener((changes) => {
       if (changes.analysisHistory) {
         setHistory(changes.analysisHistory.newValue || []);
@@ -25,7 +24,11 @@ export default function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <h1>🛡️ AI Script Monitor</h1>
+        <div className="header-top">
+          <span className="header-logo">🛡️</span>
+          <h1>AI Script Monitor</h1>
+          <span className="header-badge">v1.0</span>
+        </div>
         <nav className="tab-nav">
           <button
             className={activeTab === 'status' ? 'active' : ''}
@@ -42,9 +45,17 @@ export default function App() {
         {activeTab === 'status' && (
           <>
             <AnalysisStatus history={history} />
-            {history.map((item, i) => (
-              <CodePreview key={i} analysis={item} />
-            ))}
+            {history.length === 0 ? (
+              <div className="empty-state">
+                <div className="empty-icon">🔍</div>
+                <div className="empty-title">분석 기록이 없습니다</div>
+                <div className="empty-desc">AI 서비스에서 코드가 감지되면 자동으로 분석됩니다</div>
+              </div>
+            ) : (
+              history.map((item, i) => (
+                <CodePreview key={i} analysis={item} />
+              ))
+            )}
           </>
         )}
         {activeTab === 'settings' && <Settings />}

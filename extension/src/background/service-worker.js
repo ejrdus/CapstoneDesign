@@ -85,12 +85,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
  * 백엔드 서버에 코드 분석 요청
  * 캐시에 결과가 있으면 즉시 반환 (블러 해제 시간 최소화)
  */
-async function handleAnalyzeCode({ code, language, blockId }) {
+async function handleAnalyzeCode({ code, language, blockId, aiService }) {
   // 1. 캐시 확인 — 히트하면 서버 요청 없이 즉시 응답
   const cached = getCachedResult(code);
   if (cached) {
     console.log(`[AI Script Monitor] 캐시 히트 (blockId: ${blockId})`);
-    return { ...cached, blockId, fromCache: true };
+    return { ...cached, blockId, aiService, fromCache: true };
   }
 
   // 2. 서버 요청
@@ -98,7 +98,7 @@ async function handleAnalyzeCode({ code, language, blockId }) {
     const response = await fetch(`${SERVER_URL}/api/analyze`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code, language }),
+      body: JSON.stringify({ code, language, aiService }),
     });
 
     if (!response.ok) {
@@ -110,7 +110,7 @@ async function handleAnalyzeCode({ code, language, blockId }) {
     // 3. 결과 캐시
     setCachedResult(code, result);
 
-    return { ...result, blockId };
+    return { ...result, blockId, aiService };
   } catch (error) {
     console.error('[AI Script Monitor] 서버 통신 오류:', error);
     return {
