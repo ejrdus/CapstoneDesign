@@ -14,13 +14,24 @@
  */
 
 import { applyPendingBlur } from './overlay';
+import { querySelectorAllDeep, closestDeep } from './shadowDomBridge';
 
 // ─── Assistant 메시지 감지 ─────────────────────────────────────
 // 코드 블록뿐 아니라 AI 응답 메시지 전체를 블러 처리하기 위한 셀렉터/옵저버
+// ChatGPT, Claude, Gemini 각 서비스의 assistant 메시지 컨테이너 셀렉터
 const ASSISTANT_MESSAGE_SELECTORS = [
-  '[data-message-author-role="assistant"]', // ChatGPT
+  // ChatGPT
+  '[data-message-author-role="assistant"]',
   '[data-testid^="conversation-turn"][data-message-author-role="assistant"]',
   '[data-test-render-count] [data-message-author-role="assistant"]',
+  // Claude
+  '[data-testid="chat-message-model"]',
+  '.font-claude-message',
+  // Gemini — model-response 커스텀 요소 및 응답 컨테이너
+  'model-response',
+  'message-content[data-content-type="model"]',
+  '.model-response-text',
+  '.response-container-content',
 ].join(', ');
 
 let messageIdCounter = 0;
@@ -76,6 +87,15 @@ function isLikelyStreaming(msg) {
  */
 export function observeAssistantMessages(onNewMessage, onMessageMutation) {
   // 초기 스캔 — 기존 메시지는 처리 완료로 마킹만 (블러 X)
+  // Shadow DOM 내부도 탐색 (Gemini 대응)
+  const initialMessages = querySelectorAllDeep(document, ASSISTANT_MESSAGE_SELECTORS);
+  initialMessages.forEach((msg) => {
+    if (!msg.hasAttribute('data-asm-msg-id')) {
+      msg.setAttribute('data-asm-msg-id', generateMessageId());
+      msg.setAttribute('data-asm-msg-state', 'historical');
+    }
+  });
+  // 기존 DOM 셀렉터 폴백 (shadow DOM 미지원 환경)
   document.querySelectorAll(ASSISTANT_MESSAGE_SELECTORS).forEach((msg) => {
     if (!msg.hasAttribute('data-asm-msg-id')) {
       msg.setAttribute('data-asm-msg-id', generateMessageId());
@@ -108,11 +128,16 @@ export function observeAssistantMessages(onNewMessage, onMessageMutation) {
       }
 
       // 3) mutation이 발생한 위치의 assistant 메시지 조상 → 내용 변경 알림
+      //    단, 우리 확장 프로그램이 삽입한 요소(asm-*)의 변경은 무시
       let probe = mutation.target;
       if (probe && probe.nodeType === Node.TEXT_NODE) probe = probe.parentElement;
       if (probe && probe.nodeType === Node.ELEMENT_NODE && probe.closest) {
-        const msg = probe.closest(ASSISTANT_MESSAGE_SELECTORS);
-        if (msg) mutatedMessages.add(msg);
+        // ASM이 만든 요소의 변경이면 무시 (블러/배너/뱃지 등)
+        const isAsmElement = probe.closest && probe.closest('[data-asm-banner], [data-asm-blur], .asm-result-banner, .asm-scanning');
+        if (!isAsmElement) {
+          const msg = probe.closest(ASSISTANT_MESSAGE_SELECTORS);
+          if (msg) mutatedMessages.add(msg);
+        }
       }
     }
 
@@ -169,9 +194,36 @@ export function observeAssistantMessages(onNewMessage, onMessageMutation) {
     attributeFilter: ['data-message-author-role'],
   });
 
+  // Shadow DOM 내부에서 새 shadow root 생성 시 감시 (Gemini 대응)
+  window.addEventListener('__asm_shadow_created', () => {
+    // 새 shadow root가 생성되면 그 안의 메시지를 다시 스캔
+    const deepMessages = querySelectorAllDeep(document, ASSISTANT_MESSAGE_SELECTORS);
+    for (const msg of deepMessages) {
+      const key = msg.getAttribute('data-message-id');
+      if (key && processedMessageKeys.has(key)) continue;
+      if (msg.hasAttribute('data-asm-msg-id')) continue;
+      if (msg.parentElement && msg.parentElement.closest && msg.parentElement.closest('[data-asm-msg-id]')) continue;
+      const id = key || generateMessageId();
+      msg.setAttribute('data-asm-msg-id', id);
+      if (isLikelyStreaming(msg)) {
+        msg.setAttribute('data-asm-msg-state', 'live');
+        if (key) processedMessageKeys.add(key);
+        console.log(`[AI Script Monitor] (shadow) Assistant 메시지 감지(streaming): ${id}`);
+        onNewMessage(id, msg);
+      } else {
+        msg.setAttribute('data-asm-msg-state', 'historical');
+        if (key) processedMessageKeys.add(key);
+      }
+    }
+  });
+
   // 폴링 폴백 — MutationObserver가 놓치는 케이스 대비. canonical key로 중복 방지
+  // Shadow DOM 내부도 함께 탐색 (Gemini 대응)
   setInterval(() => {
-    const candidates = document.querySelectorAll(ASSISTANT_MESSAGE_SELECTORS);
+    // 일반 DOM + Shadow DOM 모두 탐색
+    const regularCandidates = document.querySelectorAll(ASSISTANT_MESSAGE_SELECTORS);
+    const shadowCandidates = querySelectorAllDeep(document, ASSISTANT_MESSAGE_SELECTORS);
+    const candidates = new Set([...regularCandidates, ...shadowCandidates]);
     for (const msg of candidates) {
       const key = msg.getAttribute('data-message-id');
       // 이미 처리한 키면 attribute만 갱신하고 스킵 (React가 wipe했을 수 있음)
@@ -367,12 +419,30 @@ function scanRoot(root, results) {
 }
 
 /**
+ * Shadow DOM 내부를 포함하여 코드 블록 후보를 재귀 탐색
+ */
+function scanRootDeep(root, results) {
+  scanRoot(root, results);
+
+  // shadow root 내부 탐색 (Gemini 대응)
+  if (root.querySelectorAll) {
+    const allElements = root.querySelectorAll('*');
+    for (const el of allElements) {
+      if (el.shadowRoot) {
+        scanRootDeep(el.shadowRoot, results);
+      }
+    }
+  }
+}
+
+/**
  * 현재 페이지에 있는 모든 코드 블록을 추출 (초기 스캔)
+ * Shadow DOM 내부도 재귀적으로 탐색
  */
 export function extractNewCodeBlocks() {
   const results = [];
-  scanRoot(document.body, results);
-  console.log(`[AI Script Monitor] 초기 스캔 — 코드 블록 ${results.length}개 발견`);
+  scanRootDeep(document.body, results);
+  console.log(`[AI Script Monitor] 초기 스캔 — 코드 블록 ${results.length}개 발견 (Shadow DOM 포함)`);
   return results;
 }
 
@@ -462,6 +532,70 @@ export function observeCodeBlocks(onNewBlock, onContentUpdate) {
     childList: true,
     subtree: true,
     characterData: true,
+  });
+
+  // Shadow DOM 내부에도 옵저버 설치 (Gemini 대응)
+  // 새 shadow root가 생성될 때마다 그 안에도 옵저버를 달아준다
+  const shadowObservers = new Set();
+
+  function observeShadowRoot(shadowRoot) {
+    if (shadowObservers.has(shadowRoot)) return;
+    shadowObservers.add(shadowRoot);
+
+    const shadowObs = new MutationObserver((mutations) => {
+      const candidates = new Set();
+      for (const mutation of mutations) {
+        if (mutation.type === 'childList') {
+          for (const addedNode of mutation.addedNodes) {
+            if (addedNode.nodeType === Node.ELEMENT_NODE) {
+              if (addedNode.tagName === 'PRE' || addedNode.tagName === 'CODE') {
+                candidates.add(addedNode);
+              }
+              if (addedNode.querySelectorAll) {
+                addedNode.querySelectorAll('pre, code').forEach((el) => candidates.add(el));
+              }
+              // 새로 추가된 요소에 shadowRoot이 있으면 재귀 관찰
+              if (addedNode.shadowRoot) observeShadowRoot(addedNode.shadowRoot);
+            }
+          }
+        } else if (mutation.type === 'characterData') {
+          const parent = mutation.target.parentElement;
+          if (parent) {
+            const ancestor = parent.closest && parent.closest('pre, code');
+            if (ancestor) candidates.add(ancestor);
+          }
+        }
+      }
+      for (const el of candidates) {
+        processCodeElement(el, onNewBlock, onContentUpdate);
+      }
+    });
+
+    shadowObs.observe(shadowRoot, { childList: true, subtree: true, characterData: true });
+
+    // 이미 있는 코드 블록도 즉시 스캔
+    const existingBlocks = shadowRoot.querySelectorAll('pre, code');
+    for (const el of existingBlocks) {
+      processCodeElement(el, onNewBlock, onContentUpdate);
+    }
+
+    // 하위 shadow root 재귀
+    const allElements = shadowRoot.querySelectorAll('*');
+    for (const el of allElements) {
+      if (el.shadowRoot) observeShadowRoot(el.shadowRoot);
+    }
+  }
+
+  // 기존 shadow root 탐색
+  document.querySelectorAll('*').forEach((el) => {
+    if (el.shadowRoot) observeShadowRoot(el.shadowRoot);
+  });
+
+  // 새 shadow root 생성 이벤트 수신
+  window.addEventListener('__asm_shadow_created', () => {
+    document.querySelectorAll('*').forEach((el) => {
+      if (el.shadowRoot) observeShadowRoot(el.shadowRoot);
+    });
   });
 
   return observer;

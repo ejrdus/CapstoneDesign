@@ -12,7 +12,19 @@
 import { extractNewCodeBlocks, observeCodeBlocks, observeAssistantMessages, ensureMessageId } from './codeExtractor';
 
 // AI 응답 메시지 셀렉터 (registerBlockForMessage의 안전망용)
-const ASSISTANT_MSG_SELECTOR = '[data-message-author-role="assistant"], article[data-testid^="conversation-turn"]';
+// ChatGPT, Claude, Gemini 모두 대응
+const ASSISTANT_MSG_SELECTOR = [
+  '[data-message-author-role="assistant"]',
+  'article[data-testid^="conversation-turn"]',
+  // Claude
+  '[data-testid="chat-message-model"]',
+  '.font-claude-message',
+  // Gemini
+  'model-response',
+  'message-content[data-content-type="model"]',
+  '.model-response-text',
+  '.response-container-content',
+].join(', ');
 import { detectLanguage } from './languageDetector';
 import { applyAnalysisResult, applyMessageBlur, removeMessageBlur, markMessageDanger } from './overlay';
 import { detectAIService } from '../utils/constants';
@@ -45,6 +57,8 @@ function handleNewMessage(msgId, msgEl) {
 function handleMessageMutation(msgId) {
   const state = messageStates.get(msgId);
   if (!state || state.revealed) return;
+  // 이미 모든 분석이 완료된 경우 idle 리셋하지 않음
+  if (state.settled && state.pendingAnalyses <= state.completedAnalyses) return;
   // 새 변경이 발생했으니 idle 타이머 리셋
   scheduleMessageIdle(msgId);
 }
@@ -118,6 +132,10 @@ function notifyBlockAnalyzed(blockId, result) {
   if (result && result.riskLevel === 'danger') {
     msgState.dangerCount += 1;
   }
+  // 모든 분석이 완료되면 settled를 강제 — idle 타이머 의존 없이 즉시 해제
+  if (msgState.pendingAnalyses <= msgState.completedAnalyses) {
+    msgState.settled = true;
+  }
   tryRevealMessage(msgId);
 }
 
@@ -167,8 +185,13 @@ async function executeAnalysis(blockId, code, language) {
 
   const codeHash = hashCode(code);
 
-  // 동일 코드 중복 분석 방지
-  if (analyzedHashes.has(codeHash)) return;
+  // 동일 코드 중복 분석 방지 — 메시지 블러 해제를 위해 완료 알림은 보냄
+  if (analyzedHashes.has(codeHash)) {
+    const safeResult = { riskLevel: 'safe' };
+    applyAnalysisResult(blockId, safeResult);
+    notifyBlockAnalyzed(blockId, safeResult);
+    return;
+  }
   analyzedHashes.add(codeHash);
 
   const detectedLang = language !== 'unknown' ? language : detectLanguage(code);

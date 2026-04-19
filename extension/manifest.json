@@ -3,7 +3,7 @@
   "name": "AI Script Monitor",
   "version": "1.0.0",
   "description": "생성형 AI 응답의 악성 스크립트를 실시간 탐지하고 경고하는 보안 확장 프로그램",
-  "permissions": ["storage", "activeTab"],
+  "permissions": ["storage", "activeTab", "scripting"],
   "host_permissions": [
     "https://chatgpt.com/*",
     "https://chat.openai.com/*",
@@ -16,6 +16,14 @@
     "service_worker": "background/service-worker.js"
   },
   "content_scripts": [
+    {
+      "matches": [
+        "https://gemini.google.com/*"
+      ],
+      "js": ["content/shadowDomInit.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
     {
       "matches": [
         "https://chatgpt.com/*",

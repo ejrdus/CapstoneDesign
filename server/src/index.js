@@ -18,6 +18,12 @@ app.use(cors());
 app.use(express.json({ limit: '100kb' }));
 app.use(rateLimit);
 
+// 요청 로깅
+app.use((req, res, next) => {
+  console.log(`[${new Date().toLocaleTimeString()}] ${req.method} ${req.url}`);
+  next();
+});
+
 // 라우트
 app.use('/api/analyze', analyzeRoute);
 app.use('/api/admin', adminRoute);

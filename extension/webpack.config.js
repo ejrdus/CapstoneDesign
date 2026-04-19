@@ -4,6 +4,7 @@ const CopyPlugin = require('copy-webpack-plugin');
 module.exports = {
   entry: {
     'background/service-worker': './src/background/service-worker.js',
+    'content/shadowDomInit': './src/content/shadowDomInit.js',
     'content/index': './src/content/index.js',
     'popup/index': './src/popup/index.jsx',
   },
