@@ -1,23 +1,50 @@
 /**
- * 위험도 판정 모듈 (Risk Classifier)
- * LLM 분석 결과를 기반으로 안전/주의/위험 3단계 분류
+ * 위험도 판정 모듈 (Risk Classifier) — 액션 주도 설계
  *
- * [점수 산출 방식]
- * - 주 점수: 가장 높은 위협의 (가중치 × severity)
- * - 복합 위협 보정: 위협이 2개 이상이면 누적 점수의 10%를 가산
- *   → 단독 위협보다 복합 위협이 더 위험하게 판정됨
+ * [판정 규칙]
+ *
+ * 각 위협마다 4개의 플래그(irreversible, system_wide, unambiguous_malice,
+ * obfuscated)를 받아 위협별 등급을 매긴다.
+ *
+ *   block-tier:  irreversible AND (system_wide OR unambiguous_malice OR obfuscated)
+ *   warn-tier:   플래그가 1개 이상 true
+ *   safe-tier:   플래그 0개
+ *
+ * 응답 전체 판정:
+ *
+ *   block-tier 위협 1개 이상 AND confidence ≥ CONFIDENCE_THRESHOLD  →  danger
+ *   block-tier 있지만 confidence 부족                                →  caution (한 단계 강등)
+ *   warn-tier 위협 1개 이상                                          →  caution
+ *   그 외                                                             →  safe
+ *
+ * 사용자 액션 매핑:
+ *   danger  → 코드 블록 차단 (사용자가 "그래도 보기" 클릭 필요)
+ *   caution → 코드 표시 + 경고 배너
+ *   safe    → 일반 표시
  */
 
-const RISK_WEIGHTS = {
-  file_destruction: 0.9,
-  reverse_shell: 1.0,
-  privilege_escalation: 0.85,
-  data_exfiltration: 0.9,
-  ransomware: 1.0,
-  obfuscation: 0.7,
-  network_access: 0.5,
-  code_execution: 0.6,
-};
+const CONFIDENCE_THRESHOLD = 0.7;
+
+/**
+ * 단일 위협의 등급을 판단
+ * @returns {'block' | 'warn' | 'safe'}
+ */
+function classifyThreat(threat) {
+  const irreversible = Boolean(threat.irreversible);
+  const systemWide = Boolean(threat.system_wide);
+  const unambiguous = Boolean(threat.unambiguous_malice);
+  const obfuscated = Boolean(threat.obfuscated);
+
+  if (irreversible && (systemWide || unambiguous || obfuscated)) {
+    return 'block';
+  }
+
+  const flagCount = [irreversible, systemWide, unambiguous, obfuscated].filter(Boolean).length;
+  if (flagCount >= 1) {
+    return 'warn';
+  }
+  return 'safe';
+}
 
 /**
  * LLM 분석 결과를 바탕으로 최종 위험도 판정
@@ -25,7 +52,7 @@ const RISK_WEIGHTS = {
  * @returns {Object} { riskLevel, category, reason, details }
  */
 function classifyRisk(llmResult) {
-  const { threats = [], intent, confidence } = llmResult;
+  const { threats = [], confidence = 1.0 } = llmResult;
 
   if (threats.length === 0) {
     return {
@@ -36,46 +63,55 @@ function classifyRisk(llmResult) {
     };
   }
 
-  // 각 위협의 가중치를 계산하여 최종 점수 산출
-  let maxScore = 0;
-  let totalScore = 0;
-  let primaryThreat = null;
+  // 위협별 등급을 매기고 가장 높은 등급의 위협을 primary로 선택
+  let blockThreat = null;
+  let warnThreat = null;
 
   for (const threat of threats) {
-    const weight = RISK_WEIGHTS[threat.type] || 0.5;
-    const score = weight * (threat.severity || 0.5);
-    totalScore += score;
-
-    if (score > maxScore) {
-      maxScore = score;
-      primaryThreat = threat;
+    const tier = classifyThreat(threat);
+    threat._tier = tier; // 디버깅용 — details에 포함되어 UI에서 활용 가능
+    if (tier === 'block' && !blockThreat) {
+      blockThreat = threat;
+    } else if (tier === 'warn' && !warnThreat) {
+      warnThreat = threat;
     }
   }
 
-  // 복합 위협 보정: 여러 위협이 동시에 존재하면 위험도 상향
-  // 예: 네트워크 접근(0.5) + 코드 실행(0.6) 조합 → 개별로는 caution이지만 조합 시 danger
-  let finalScore = maxScore;
-  if (threats.length >= 2) {
-    const otherScore = totalScore - maxScore;
-    finalScore = Math.min(1.0, maxScore + otherScore * 0.1);
+  let riskLevel;
+  let primary;
+  let reasonSuffix = '';
+
+  if (blockThreat) {
+    if (confidence >= CONFIDENCE_THRESHOLD) {
+      riskLevel = 'danger';
+      primary = blockThreat;
+    } else {
+      // LLM 자신감 부족 → 한 단계 강등
+      riskLevel = 'caution';
+      primary = blockThreat;
+      reasonSuffix = ` (분석 신뢰도 ${confidence.toFixed(2)}로 위험도 한 단계 하향)`;
+    }
+  } else if (warnThreat) {
+    riskLevel = 'caution';
+    primary = warnThreat;
+  } else {
+    // 모든 위협이 safe-tier — 위협으로 보고됐지만 플래그 0개
+    riskLevel = 'safe';
+    primary = threats[0];
   }
 
-  // 점수 기반 3단계 분류
-  let riskLevel;
-  if (finalScore >= 0.7) {
-    riskLevel = 'danger';
-  } else if (finalScore >= 0.4) {
-    riskLevel = 'caution';
-  } else {
-    riskLevel = 'safe';
-  }
+  console.log(
+    `[RiskClassifier] threats=${threats.length} `
+    + `tiers=[${threats.map((t) => t._tier).join(',')}] `
+    + `confidence=${confidence.toFixed(2)} → ${riskLevel}`,
+  );
 
   return {
     riskLevel,
-    category: primaryThreat?.category || '알 수 없음',
-    reason: primaryThreat?.description || '세부 정보 없음',
+    category: primary?.category || '알 수 없음',
+    reason: (primary?.description || '세부 정보 없음') + reasonSuffix,
     details: llmResult,
   };
 }
 
-module.exports = { classifyRisk };
+module.exports = { classifyRisk, classifyThreat, CONFIDENCE_THRESHOLD };

@@ -11,5 +11,5 @@
 ## 기술 스택
 - **크롬 확장**: Manifest V3, React, Webpack
 - **백엔드**: Node.js, Express
-- **LLM API**: OpenAI GPT-4o-mini
+- **LLM API**: Anthropic Claude (claude-opus-4-7)
 - **통신**: REST API (JSON)

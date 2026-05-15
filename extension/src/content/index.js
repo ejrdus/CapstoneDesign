@@ -145,14 +145,23 @@ const debounceTimers = new Map();
 const latestCodeMap = new Map();
 // 이미 분석 요청을 보낸 코드 해시 (중복 방지)
 const analyzedHashes = new Set();
+// 확정 판정이 내려진 블록 — 이후 재분석 차단 (self-attack 버그 방지)
+const lockedBlocks = new Set();
 
 const DEBOUNCE_MS = 800; // 스트리밍 안정화 대기 시간
+
+function isLockedVerdict(level) {
+  return level === 'safe' || level === 'caution' || level === 'danger';
+}
 
 /**
  * 코드 블록에 대해 debounce 적용 후 분석 요청
  * 스트리밍 중에는 타이머가 계속 리셋되다가, 코드가 안정화되면 분석 실행
  */
 function scheduleAnalysis(blockId, code, language, blurTarget, element) {
+  // 이미 확정 판정이 있는 블록은 재분석 안 함 (self-attack 버그 방지)
+  if (lockedBlocks.has(blockId)) return;
+
   // 최신 코드 저장
   latestCodeMap.set(blockId, { code, language, blurTarget, element });
 
@@ -177,6 +186,11 @@ function scheduleAnalysis(blockId, code, language, blurTarget, element) {
  * 서버에 분석 요청 실행
  */
 async function executeAnalysis(blockId, code, language) {
+  // 이미 확정 판정이 내려진 블록은 재분석 금지 (race condition 방지)
+  if (lockedBlocks.has(blockId)) {
+    return;
+  }
+
   // 너무 짧은 코드(스트리밍 시작 직후 등)는 분석 보류
   // — 블러는 이미 적용된 상태이고, 이후 content update가 들어오면 다시 스케줄됨
   if (!code || code.trim().length < 5) {
@@ -217,6 +231,16 @@ async function executeAnalysis(blockId, code, language) {
         reason: response.error,
       });
       return;
+    }
+
+    // 확정 판정이면 잠금을 먼저 걸어둠 — applyAnalysisResult의 DOM 변경이
+    // 다시 scheduleAnalysis를 트리거해도 새 분석이 시작되지 않도록
+    if (response && isLockedVerdict(response.riskLevel)) {
+      lockedBlocks.add(blockId);
+      if (debounceTimers.has(blockId)) {
+        clearTimeout(debounceTimers.get(blockId));
+        debounceTimers.delete(blockId);
+      }
     }
 
     // 분석 결과를 오버레이에 반영

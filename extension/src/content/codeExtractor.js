@@ -16,6 +16,34 @@
 import { applyPendingBlur } from './overlay';
 import { querySelectorAllDeep, closestDeep } from './shadowDomBridge';
 
+/**
+ * 우리 확장 프로그램이 삽입한 요소를 제외하고 텍스트를 추출.
+ * - asm-result-banner, asm-scanning 등 우리 배너/오버레이 텍스트가 코드 추출에
+ *   섞이는 self-attack 버그를 막는다 (배너 텍스트가 Claude한테 안전 위장 시도로
+ *   오인되어 false positive 발생하는 케이스 차단).
+ */
+function extractCleanText(el) {
+  function walk(node) {
+    if (node.nodeType === Node.TEXT_NODE) return node.nodeValue || '';
+    if (node.nodeType !== Node.ELEMENT_NODE) return '';
+    // 우리 확장의 모든 표식: 클래스 + data 속성
+    if (node.classList) {
+      const cl = node.classList;
+      if (cl.contains('asm-result-banner') || cl.contains('asm-scanning')
+        || cl.contains('asm-banner-inner') || cl.contains('asm-evidence-section')
+        || cl.contains('asm-danger-actions')) return '';
+    }
+    if (node.hasAttribute) {
+      if (node.hasAttribute('data-asm-banner')) return '';
+      if (node.hasAttribute('data-asm-msg-banner')) return '';
+    }
+    let text = '';
+    for (const child of node.childNodes) text += walk(child);
+    return text;
+  }
+  return walk(el);
+}
+
 // ─── Assistant 메시지 감지 ─────────────────────────────────────
 // 코드 블록뿐 아니라 AI 응답 메시지 전체를 블러 처리하기 위한 셀렉터/옵저버
 // ChatGPT, Claude, Gemini 각 서비스의 assistant 메시지 컨테이너 셀렉터
@@ -381,7 +409,7 @@ function registerCodeBlock(el) {
   // 감지 즉시 블러 적용 (빈 블록도 포함 — 이후 스트리밍 텍스트가 처음부터 흐려짐)
   applyPendingBlur(blurTarget, blockId);
 
-  const code = (el.textContent || '').trim();
+  const code = extractCleanText(el).trim();
   console.log(
     `[AI Script Monitor] 코드 블록 감지: <${el.tagName.toLowerCase()}> "${code.substring(0, 40)}..."`
   );
@@ -454,7 +482,7 @@ function processCodeElement(el, onNewBlock, onContentUpdate) {
 
   if (isProcessed(el)) {
     const blockId = el.getAttribute('data-asm-id');
-    const code = (el.textContent || '').trim();
+    const code = extractCleanText(el).trim();
     onContentUpdate(blockId, code, el);
     return;
   }
