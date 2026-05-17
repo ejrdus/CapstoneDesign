@@ -11,7 +11,64 @@
  *   - safe    → 블러 해제 + 초록 "안전" 뱃지 (2초 후 자동 제거)
  *   - caution → 블러 해제 + 노란 경고 배너 유지
  *   - danger  → 블러 유지 + 빨간 차단 오버레이 + 사용자 확인 버튼
+ *
+ * [Trusted Types CSP 대응]
+ * ChatGPT 등 일부 사이트는 Trusted Types CSP를 강제하여 innerHTML 직접 할당을
+ * 차단함. 이를 우회하기 위해 자체 policy를 등록하고, innerHTML 대신 setSafeHTML
+ * 헬퍼를 사용한다. policy는 우리가 만든 HTML 문자열에만 적용되므로 안전하다.
+ * (사용자 입력은 escapeHtml로 이미 sanitize 처리되어 있음)
  */
+
+// Trusted Types policy — Trusted Types를 강제하는 사이트(ChatGPT)에서 innerHTML이
+// 막히는 문제를 해결한다. 정책을 등록하지 못하는 환경에서는 정상적인 문자열을
+// 그대로 사용한다.
+let _asmTrustedHTMLPolicy = null;
+try {
+  if (typeof window !== 'undefined' && window.trustedTypes && window.trustedTypes.createPolicy) {
+    _asmTrustedHTMLPolicy = window.trustedTypes.createPolicy('asm-overlay', {
+      createHTML: (input) => input,
+    });
+  }
+} catch (e) {
+  // 동일 이름의 policy가 이미 존재하거나 Trusted Types가 비활성화된 경우 무시
+  console.warn('[AI Script Monitor] Trusted Types policy 등록 실패, fallback 사용:', e);
+  _asmTrustedHTMLPolicy = null;
+}
+
+/**
+ * innerHTML을 안전하게 할당 — Trusted Types CSP가 켜진 사이트에서도 동작
+ */
+function setSafeHTML(element, htmlString) {
+  if (_asmTrustedHTMLPolicy) {
+    element.innerHTML = _asmTrustedHTMLPolicy.createHTML(htmlString);
+  } else {
+    element.innerHTML = htmlString;
+  }
+}
+
+/**
+ * insertBefore를 race-safe하게 호출.
+ * referenceNode의 parentNode가 사라졌거나 referenceNode가 더 이상 그 부모의 자식이
+ * 아닌 경우(React가 DOM을 갈아치우는 동안 발생) 안전하게 false 반환.
+ *
+ * @param {Node} newNode - 삽입할 노드
+ * @param {Node} referenceNode - 그 앞에 삽입할 기준 노드
+ * @returns {boolean} 삽입 성공 여부
+ */
+function safeInsertBefore(newNode, referenceNode) {
+  if (!referenceNode) return false;
+  const parent = referenceNode.parentNode;
+  if (!parent) return false;
+  // race 확인 — referenceNode가 여전히 parent의 자식인가
+  if (referenceNode.parentNode !== parent) return false;
+  try {
+    parent.insertBefore(newNode, referenceNode);
+    return true;
+  } catch (e) {
+    // DOM race로 인한 예외는 조용히 무시 — 다음 mutation에서 재시도됨
+    return false;
+  }
+}
 
 // 블록별 상태 추적
 const blockStates = new Map();
@@ -70,22 +127,25 @@ export function applyMessageBlur(msgEl, msgId) {
 
   // 메시지 위에 "분석 중" 배너 삽입 (한 메시지당 1개만)
   let banner = null;
-  if (msgEl.parentElement) {
+  const parent = msgEl.parentElement;
+  if (parent) {
     // 이미 같은 msgId용 배너가 있으면 재사용
-    const dup = msgEl.parentElement.querySelector(`[data-asm-msg-banner="${msgId}"]`);
+    const dup = parent.querySelector(`[data-asm-msg-banner="${msgId}"]`);
     if (dup) {
       banner = dup;
     } else {
-      banner = document.createElement('div');
-      banner.className = 'asm-result-banner asm-scanning';
-      banner.setAttribute('data-asm-msg-banner', msgId);
-      banner.innerHTML = `
+      const newBanner = document.createElement('div');
+      newBanner.className = 'asm-result-banner asm-scanning';
+      newBanner.setAttribute('data-asm-msg-banner', msgId);
+      setSafeHTML(newBanner, `
         <div class="asm-banner-inner">
           <span class="asm-spinner"></span>
           <span class="asm-banner-text">AI 응답 보안 분석 중...</span>
         </div>
-      `;
-      msgEl.parentElement.insertBefore(banner, msgEl);
+      `);
+      if (safeInsertBefore(newBanner, msgEl)) {
+        banner = newBanner;
+      }
     }
   }
 
@@ -134,7 +194,7 @@ export function markMessageDanger(msgEl, msgId, summary) {
   const state = messageStates.get(msgId);
   if (state && state.banner) {
     state.banner.className = 'asm-result-banner asm-result-danger';
-    state.banner.innerHTML = `
+    setSafeHTML(state.banner, `
       <div class="asm-banner-inner">
         <span class="asm-banner-icon">⛔</span>
         <div class="asm-banner-detail">
@@ -145,7 +205,7 @@ export function markMessageDanger(msgEl, msgId, summary) {
       <div class="asm-danger-actions">
         <button class="asm-btn asm-btn-reveal" data-msg-id="${msgId}">무시하고 표시</button>
       </div>
-    `;
+    `);
     const revealBtn = state.banner.querySelector('.asm-btn-reveal');
     if (revealBtn) {
       revealBtn.addEventListener('click', () => {
@@ -181,10 +241,11 @@ export function applyPendingBlur(blurTarget, blockId) {
 
   // 메시지 단위 블러 배너가 이미 있으면 블록 배너 생략 (중복 방지)
   const insideMessageBlur = blurTarget.closest && blurTarget.closest('[data-asm-msg-id]');
-  if (!insideMessageBlur && blurTarget.parentElement) {
+  if (!insideMessageBlur) {
     const banner = createScanningBanner(blockId);
-    blurTarget.parentElement.insertBefore(banner, blurTarget);
-    blockStates.get(blockId).overlay = banner;
+    if (safeInsertBefore(banner, blurTarget)) {
+      blockStates.get(blockId).overlay = banner;
+    }
   }
 }
 
@@ -237,14 +298,14 @@ function handleSafe(blurTarget, blockId, category, reason) {
   const badge = document.createElement('div');
   badge.className = 'asm-result-banner asm-result-safe';
   badge.setAttribute('data-asm-banner', blockId);
-  badge.innerHTML = `
+  setSafeHTML(badge, `
     <div class="asm-banner-inner">
       <span class="asm-banner-icon">✅</span>
       <span class="asm-banner-text"><strong>안전</strong> — 악성 행위가 감지되지 않았습니다.</span>
     </div>
-  `;
+  `);
 
-  blurTarget.parentElement.insertBefore(badge, blurTarget);
+  if (!safeInsertBefore(badge, blurTarget)) return;
   blockStates.set(blockId, { state: 'safe', blurTarget, overlay: badge });
 
   // 3초 후 뱃지 자동 페이드아웃
@@ -266,7 +327,7 @@ function handleCaution(blurTarget, blockId, category, reason, threats) {
   const banner = document.createElement('div');
   banner.className = 'asm-result-banner asm-result-caution';
   banner.setAttribute('data-asm-banner', blockId);
-  banner.innerHTML = `
+  setSafeHTML(banner, `
     <div class="asm-banner-inner">
       <span class="asm-banner-icon">⚠️</span>
       <div class="asm-banner-detail">
@@ -276,9 +337,9 @@ function handleCaution(blurTarget, blockId, category, reason, threats) {
       </div>
       <button class="asm-dismiss-btn" title="닫기">✕</button>
     </div>
-  `;
+  `);
 
-  blurTarget.parentElement.insertBefore(banner, blurTarget);
+  if (!safeInsertBefore(banner, blurTarget)) return;
   blockStates.set(blockId, { state: 'caution', blurTarget, overlay: banner });
 
   // 닫기 버튼
@@ -304,7 +365,7 @@ function handleDanger(blurTarget, blockId, category, reason, threats) {
   const overlay = document.createElement('div');
   overlay.className = 'asm-result-banner asm-result-danger';
   overlay.setAttribute('data-asm-banner', blockId);
-  overlay.innerHTML = `
+  setSafeHTML(overlay, `
     <div class="asm-banner-inner">
       <span class="asm-banner-icon">⛔</span>
       <div class="asm-banner-detail">
@@ -317,24 +378,28 @@ function handleDanger(blurTarget, blockId, category, reason, threats) {
       <button class="asm-btn asm-btn-block">차단 유지</button>
       <button class="asm-btn asm-btn-reveal">무시하고 표시</button>
     </div>
-  `;
+  `);
 
-  blurTarget.parentElement.insertBefore(overlay, blurTarget);
+  if (!safeInsertBefore(overlay, blurTarget)) return;
   blockStates.set(blockId, { state: 'danger', blurTarget, overlay });
 
   // 차단 유지 버튼 → 코드 블록 완전 숨김
   overlay.querySelector('.asm-btn-block').addEventListener('click', () => {
     blurTarget.style.display = 'none';
-    overlay.querySelector('.asm-danger-actions').innerHTML =
-      '<span class="asm-blocked-label">🚫 차단됨</span>';
+    setSafeHTML(
+      overlay.querySelector('.asm-danger-actions'),
+      '<span class="asm-blocked-label">🚫 차단됨</span>'
+    );
     blockStates.set(blockId, { ...blockStates.get(blockId), state: 'blocked' });
   });
 
   // 무시하고 표시 버튼 → 블러 해제
   overlay.querySelector('.asm-btn-reveal').addEventListener('click', () => {
     removeBlur(blurTarget);
-    overlay.querySelector('.asm-danger-actions').innerHTML =
-      '<span class="asm-revealed-label">⚠️ 사용자가 표시를 허용했습니다</span>';
+    setSafeHTML(
+      overlay.querySelector('.asm-danger-actions'),
+      '<span class="asm-revealed-label">⚠️ 사용자가 표시를 허용했습니다</span>'
+    );
     blockStates.set(blockId, { ...blockStates.get(blockId), state: 'revealed' });
   });
 
@@ -414,12 +479,12 @@ function createScanningBanner(blockId) {
   const banner = document.createElement('div');
   banner.className = 'asm-result-banner asm-scanning';
   banner.setAttribute('data-asm-banner', blockId);
-  banner.innerHTML = `
+  setSafeHTML(banner, `
     <div class="asm-banner-inner">
       <span class="asm-spinner"></span>
       <span class="asm-banner-text">보안 분석 중...</span>
     </div>
-  `;
+  `);
   return banner;
 }
 

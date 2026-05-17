@@ -41,6 +41,7 @@ const blockToMessage = new Map();
 const MESSAGE_IDLE_MS = 1500; // 메시지 스트리밍 idle 판정 시간
 
 function handleNewMessage(msgId, msgEl) {
+  console.log('[ASM-DEBUG] handleNewMessage 진입:', msgId);
   applyMessageBlur(msgEl, msgId);
   messageStates.set(msgId, {
     element: msgEl,
@@ -68,18 +69,50 @@ function scheduleMessageIdle(msgId) {
   if (!state) return;
   if (state.idleTimer) clearTimeout(state.idleTimer);
   state.idleTimer = setTimeout(() => {
+    console.log('[ASM-DEBUG] idle 타이머 발동:', msgId,
+      'pending=' + state.pendingAnalyses,
+      'completed=' + state.completedAnalyses);
     state.settled = true;
-    tryRevealMessage(msgId);
+    // [ChatGPT 한정] idle 타이머가 발동했으면 스트리밍은 끝난 것 — 카운트 안 맞아도 강제로 풀어준다.
+    // ChatGPT는 코드 블록 1개당 <pre>를 여러 개 만들면서 일부 분석이 누락되는 경우가 있어
+    // pendingAnalyses === completedAnalyses 매칭이 영원히 깨질 수 있다. Claude/Gemini는 정상이므로
+    // ChatGPT에서만 force reveal 한다.
+    // hostname 직접 확인 — detectAIService() 결과 형식에 의존하지 않음
+    const hostname = (typeof window !== 'undefined' && window.location)
+      ? window.location.hostname : '';
+    const isChatGPT = hostname.includes('chatgpt.com') || hostname.includes('openai.com');
+    console.log('[ASM-DEBUG] hostname:', hostname, 'isChatGPT:', isChatGPT,
+      'currentAIService:', currentAIService);
+    tryRevealMessage(msgId, isChatGPT);
   }, MESSAGE_IDLE_MS);
 }
 
-function tryRevealMessage(msgId) {
+function tryRevealMessage(msgId, force) {
   const state = messageStates.get(msgId);
-  if (!state || state.revealed) return;
+  if (!state) {
+    console.log('[ASM-DEBUG] tryReveal:', msgId, '→ NO STATE');
+    return;
+  }
+  if (state.revealed) {
+    console.log('[ASM-DEBUG] tryReveal:', msgId, '→ already revealed');
+    return;
+  }
   // 스트리밍이 idle 상태여야 함
-  if (!state.settled) return;
-  // 진행 중인 코드 블록 분석이 있으면 대기
-  if (state.pendingAnalyses > state.completedAnalyses) return;
+  if (!state.settled) {
+    console.log('[ASM-DEBUG] tryReveal:', msgId, '→ NOT SETTLED (idle 타이머 안 끝남)');
+    return;
+  }
+  // 진행 중인 코드 블록 분석이 있으면 대기 (force=true면 무시 — ChatGPT 한정)
+  if (!force && state.pendingAnalyses > state.completedAnalyses) {
+    console.log('[ASM-DEBUG] tryReveal:', msgId,
+      '→ COUNT MISMATCH pending=' + state.pendingAnalyses,
+      'completed=' + state.completedAnalyses);
+    return;
+  }
+
+  console.log('[ASM-DEBUG] tryReveal:', msgId, '→ REVEALING!',
+    'danger=' + state.dangerCount,
+    force ? '(FORCED by idle - ChatGPT)' : '');
 
   if (state.dangerCount > 0) {
     markMessageDanger(state.element, msgId, `${state.dangerCount}개의 위험한 코드 블록이 감지되었습니다.`);
@@ -112,26 +145,47 @@ function registerBlockForMessage(blockId, element) {
     }
   }
 
-  if (!msgEl) return;
+  if (!msgEl) {
+    console.log('[ASM-DEBUG] registerBlock:', blockId, '→ NO MSG (메시지 못 찾음)');
+    return;
+  }
   const msgId = msgEl.getAttribute('data-asm-msg-id');
   const msgState = messageStates.get(msgId);
-  if (!msgState) return; // historical 등은 무시
-  if (blockToMessage.has(blockId)) return;
+  if (!msgState) {
+    console.log('[ASM-DEBUG] registerBlock:', blockId, '→ NO MSG STATE (historical일 듯)', msgId);
+    return; // historical 등은 무시
+  }
+  if (blockToMessage.has(blockId)) {
+    console.log('[ASM-DEBUG] registerBlock:', blockId, '→ 이미 등록됨');
+    return;
+  }
   blockToMessage.set(blockId, msgId);
   msgState.pendingAnalyses += 1;
+  console.log('[ASM-DEBUG] registerBlock:', blockId, '→', msgId,
+    'pending=' + msgState.pendingAnalyses);
   // 새 코드 블록이 발견되면 idle 카운트도 다시 시작
   scheduleMessageIdle(msgId);
 }
 
 function notifyBlockAnalyzed(blockId, result) {
   const msgId = blockToMessage.get(blockId);
-  if (!msgId) return;
+  if (!msgId) {
+    console.log('[ASM-DEBUG] notifyAnalyzed:', blockId, '→ NO MSG (blockToMessage 매핑 없음)');
+    return;
+  }
   const msgState = messageStates.get(msgId);
-  if (!msgState) return;
+  if (!msgState) {
+    console.log('[ASM-DEBUG] notifyAnalyzed:', blockId, '→ NO MSG STATE');
+    return;
+  }
   msgState.completedAnalyses += 1;
   if (result && result.riskLevel === 'danger') {
     msgState.dangerCount += 1;
   }
+  console.log('[ASM-DEBUG] notifyAnalyzed:', blockId, '→', msgId,
+    'pending=' + msgState.pendingAnalyses,
+    'completed=' + msgState.completedAnalyses,
+    'risk=' + (result ? result.riskLevel : 'null'));
   // 모든 분석이 완료되면 settled를 강제 — idle 타이머 의존 없이 즉시 해제
   if (msgState.pendingAnalyses <= msgState.completedAnalyses) {
     msgState.settled = true;

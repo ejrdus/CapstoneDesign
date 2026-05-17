@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { validateAnalyzeRequest } = require('../utils/validator');
 const { preprocessCode } = require('../utils/codePreprocessor');
+const { anonymize, logRedactions } = require('../utils/anonymizer');
 const { analyzeWithLLM } = require('../services/llmService');
 const { classifyRisk } = require('../services/riskClassifier');
 const { recordAnalysis, getSessionHistory } = require('../services/sessionTracker');
@@ -25,8 +26,12 @@ router.post('/', async (req, res, next) => {
     // 2. 코드 전처리
     const cleanCode = preprocessCode(code);
 
-    // 3. LLM 의미 분석 (인젝션 방어는 시스템 프롬프트에 내장됨)
-    const llmResult = await analyzeWithLLM(cleanCode, language);
+    // 2-1. 비식별화 (민감 정보 마스킹)
+    const { anonymized: anonymizedCode, replacements } = anonymize(cleanCode);
+    logRedactions(replacements);
+
+    // 3. LLM 의미 분석 (비식별화된 코드로 분석, 인젝션 방어는 시스템 프롬프트에 내장됨)
+    const llmResult = await analyzeWithLLM(anonymizedCode, language);
 
     // 4. 단일 코드 블록 위험도 판정
     const riskResult = classifyRisk(llmResult);
@@ -78,13 +83,13 @@ router.post('/', async (req, res, next) => {
       }
     }
 
-    // 6. 분석 로그 DB 저장
+    // 6. 분석 로그 DB 저장 (비식별화된 코드만 저장)
     try {
       db.prepare(`
         INSERT INTO analysis_logs (code, language, ai_service, risk_level, category, reason, details, ip_address)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
-        code,
+        anonymizedCode,
         language || 'unknown',
         aiService || 'Unknown',
         result.riskLevel,

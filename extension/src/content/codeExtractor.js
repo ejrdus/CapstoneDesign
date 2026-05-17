@@ -403,13 +403,37 @@ function registerCodeBlock(el) {
     if (parentPre && parentPre !== el && isProcessed(parentPre)) return null;
   }
 
+  // [ChatGPT 대응] 같은 메시지 안에서 거의 동일한 코드 블록이 이미 처리됐으면 스킵.
+  // ChatGPT는 코드 블록 1개당 <pre> 2개(언어 헤더 + 코드 본문)를 만들기 때문에
+  // 둘 다 처리하면 메시지 단위 카운트가 부풀려져 블러가 영원히 안 풀린다.
+  const candidateText = extractCleanText(el).trim();
+  if (candidateText.length >= 20) {
+    // assistant 메시지 컨테이너 기준으로 이미 처리된 <pre>의 텍스트와 비교
+    const msgContainer = el.closest && el.closest('[data-asm-msg-id]');
+    if (msgContainer) {
+      const siblingPres = msgContainer.querySelectorAll('[data-asm-id]');
+      for (const sibling of siblingPres) {
+        if (sibling === el) continue;
+        const siblingText = extractCleanText(sibling).trim();
+        if (!siblingText) continue;
+        // 한쪽이 다른 쪽을 포함하고, 길이 차이가 작으면(언어 라벨 정도) 같은 코드로 간주
+        const longer = candidateText.length >= siblingText.length ? candidateText : siblingText;
+        const shorter = candidateText.length >= siblingText.length ? siblingText : candidateText;
+        if (longer.includes(shorter) && (longer.length - shorter.length) <= 10) {
+          console.log('[AI Script Monitor] 중복 코드 블록 스킵 (ChatGPT 이중 <pre>)');
+          return null;
+        }
+      }
+    }
+  }
+
   const blockId = markProcessed(el);
   const blurTarget = getBlurTarget(el);
 
   // 감지 즉시 블러 적용 (빈 블록도 포함 — 이후 스트리밍 텍스트가 처음부터 흐려짐)
   applyPendingBlur(blurTarget, blockId);
 
-  const code = extractCleanText(el).trim();
+  const code = candidateText;
   console.log(
     `[AI Script Monitor] 코드 블록 감지: <${el.tagName.toLowerCase()}> "${code.substring(0, 40)}..."`
   );
