@@ -4,7 +4,10 @@
 
 const jwt = require('jsonwebtoken');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'ai-script-monitor-secret-key-2024';
+const JWT_SECRET = process.env.JWT_SECRET || (() => {
+  console.warn('[AUTH] JWT_SECRET 환경변수가 설정되지 않았습니다. 기본값을 사용합니다. 프로덕션에서는 반드시 .env에 JWT_SECRET을 설정하세요.');
+  return 'asm-default-jwt-secret-change-me';
+})();
 
 function authMiddleware(req, res, next) {
   const authHeader = req.headers.authorization;

@@ -66,9 +66,11 @@ db.exec(`
 // 기본 관리자 계정 생성 (없을 경우)
 const defaultAdmin = db.prepare('SELECT id FROM admins WHERE username = ?').get('admin');
 if (!defaultAdmin) {
-  const hashedPw = bcrypt.hashSync('admin1234', 10);
-  db.prepare('INSERT INTO admins (username, password, role, approved) VALUES (?, ?, ?, ?)').run('admin', hashedPw, 'superadmin', 1);
-  console.log('[DB] 기본 관리자 계정 생성: admin / admin1234');
+  const adminUser = process.env.ADMIN_USERNAME || 'admin';
+  const adminPass = process.env.ADMIN_PASSWORD || 'admin1234';
+  const hashedPw = bcrypt.hashSync(adminPass, 10);
+  db.prepare('INSERT INTO admins (username, password, role, approved) VALUES (?, ?, ?, ?)').run(adminUser, hashedPw, 'superadmin', 1);
+  console.log(`[DB] 기본 관리자 계정 생성: ${adminUser} (비밀번호는 환경변수 ADMIN_PASSWORD 사용)`);
 }
 
 module.exports = db;
