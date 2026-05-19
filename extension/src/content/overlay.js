@@ -172,11 +172,13 @@ export function removeMessageBlur(msgEl, msgId) {
   msgEl.style.removeProperty('transition');
   msgEl.setAttribute('data-asm-msg-state', 'revealed');
 
-  if (state && state.banner && state.banner.parentElement) {
-    state.banner.classList.add('asm-fade-out');
+  // "분석 중" 배너 제거 (안전 배너는 코드 블록 레벨에서 표시)
+  const banner = state && state.banner && state.banner.parentElement ? state.banner : null;
+  if (banner) {
+    banner.classList.add('asm-fade-out');
     setTimeout(() => {
-      if (state.banner.parentElement) state.banner.remove();
-    }, 300);
+      if (banner.parentElement) banner.remove();
+    }, 500);
   }
 }
 
@@ -274,13 +276,18 @@ export function applyAnalysisResult(blockId, result) {
 
   switch (riskLevel) {
     case 'safe':
-      handleSafe(blurTarget, blockId, category, reason);
+      if (result._noBanner) {
+        removeBlur(blurTarget);
+        blockStates.set(blockId, { state: 'safe', blurTarget, overlay: null });
+      } else {
+        handleSafe(blurTarget, blockId, category, reason);
+      }
       break;
     case 'caution':
-      handleCaution(blurTarget, blockId, category, reason, threats);
+      handleCaution(blurTarget, blockId, category, reason, threats, details);
       break;
     case 'danger':
-      handleDanger(blurTarget, blockId, category, reason, threats);
+      handleDanger(blurTarget, blockId, category, reason, threats, details);
       break;
     default:
       // unknown / error → 블러 해제하되 경고
@@ -319,9 +326,14 @@ function handleSafe(blurTarget, blockId, category, reason) {
 
 // ─── caution: 블러 해제 + 경고 배너 유지 ─────────────────────
 
-function handleCaution(blurTarget, blockId, category, reason, threats) {
+function handleCaution(blurTarget, blockId, category, reason, threats, details) {
   removeBlur(blurTarget);
 
+  const intent = (details && details.intent) || '';
+  const confidence = details && typeof details.confidence === 'number' ? details.confidence : null;
+  const confidenceHtml = confidence !== null
+    ? `<span class="asm-confidence-badge asm-confidence-caution">${Math.round(confidence * 100)}%</span>`
+    : '';
   const evidenceHtml = buildEvidenceHtml(threats);
 
   const banner = document.createElement('div');
@@ -331,7 +343,11 @@ function handleCaution(blurTarget, blockId, category, reason, threats) {
     <div class="asm-banner-inner">
       <span class="asm-banner-icon">⚠️</span>
       <div class="asm-banner-detail">
-        <strong>주의</strong> — ${escapeHtml(category)}
+        <div class="asm-banner-title-row">
+          <strong>주의</strong> — ${escapeHtml(category)}
+          ${confidenceHtml}
+        </div>
+        ${intent ? `<p class="asm-banner-intent">${escapeHtml(intent)}</p>` : ''}
         <p class="asm-banner-reason">${escapeHtml(reason)}</p>
         ${evidenceHtml}
       </div>
@@ -342,24 +358,27 @@ function handleCaution(blurTarget, blockId, category, reason, threats) {
   if (!safeInsertBefore(banner, blurTarget)) return;
   blockStates.set(blockId, { state: 'caution', blurTarget, overlay: banner });
 
-  // 닫기 버튼
   banner.querySelector('.asm-dismiss-btn').addEventListener('click', () => {
     banner.classList.add('asm-fade-out');
     setTimeout(() => { if (banner.parentElement) banner.remove(); }, 300);
   });
 
-  // 증거 토글 버튼
   setupEvidenceToggle(banner);
 }
 
 // ─── danger: 블러 유지 + 차단 오버레이 + 확인 버튼 ───────────
 
-function handleDanger(blurTarget, blockId, category, reason, threats) {
+function handleDanger(blurTarget, blockId, category, reason, threats, details) {
   // 블러 유지! pending → danger 로 전환
   blurTarget.setAttribute('data-asm-blur', 'danger');
   blurTarget.classList.remove('asm-blur-pending');
   blurTarget.classList.add('asm-blur-danger');
 
+  const intent = (details && details.intent) || '';
+  const confidence = details && typeof details.confidence === 'number' ? details.confidence : null;
+  const confidenceHtml = confidence !== null
+    ? `<span class="asm-confidence-badge asm-confidence-danger">${Math.round(confidence * 100)}%</span>`
+    : '';
   const evidenceHtml = buildEvidenceHtml(threats);
 
   const overlay = document.createElement('div');
@@ -369,21 +388,29 @@ function handleDanger(blurTarget, blockId, category, reason, threats) {
     <div class="asm-banner-inner">
       <span class="asm-banner-icon">⛔</span>
       <div class="asm-banner-detail">
-        <strong>위험한 코드가 감지되었습니다</strong> — ${escapeHtml(category)}
+        <div class="asm-banner-title-row">
+          <strong>위험한 코드가 감지되었습니다</strong> — ${escapeHtml(category)}
+          ${confidenceHtml}
+        </div>
+        ${intent ? `
+        <div class="asm-intent-box asm-intent-danger">
+          <span class="asm-intent-label">의도</span>
+          <span class="asm-intent-text">${escapeHtml(intent)}</span>
+        </div>` : ''}
         <p class="asm-banner-reason">${escapeHtml(reason)}</p>
         ${evidenceHtml}
       </div>
     </div>
     <div class="asm-danger-actions">
       <button class="asm-btn asm-btn-block">차단 유지</button>
-      <button class="asm-btn asm-btn-reveal">무시하고 표시</button>
+      <button class="asm-btn asm-btn-reveal">코드 보기 (위험 감수)</button>
     </div>
   `);
 
   if (!safeInsertBefore(overlay, blurTarget)) return;
   blockStates.set(blockId, { state: 'danger', blurTarget, overlay });
 
-  // 차단 유지 버튼 → 코드 블록 완전 숨김
+  // 차단 유지 버튼
   overlay.querySelector('.asm-btn-block').addEventListener('click', () => {
     blurTarget.style.display = 'none';
     setSafeHTML(
@@ -393,18 +420,78 @@ function handleDanger(blurTarget, blockId, category, reason, threats) {
     blockStates.set(blockId, { ...blockStates.get(blockId), state: 'blocked' });
   });
 
-  // 무시하고 표시 버튼 → 블러 해제
+  // 코드 보기 버튼 → 2단계 확인
   overlay.querySelector('.asm-btn-reveal').addEventListener('click', () => {
-    removeBlur(blurTarget);
-    setSafeHTML(
-      overlay.querySelector('.asm-danger-actions'),
-      '<span class="asm-revealed-label">⚠️ 사용자가 표시를 허용했습니다</span>'
-    );
-    blockStates.set(blockId, { ...blockStates.get(blockId), state: 'revealed' });
+    const actionsEl = overlay.querySelector('.asm-danger-actions');
+    setSafeHTML(actionsEl, `
+      <div class="asm-confirm-box">
+        <p class="asm-confirm-text">⚠️ 이 코드는 <strong>${escapeHtml(category)}</strong> 위협이 감지된 코드입니다. 정말 표시하시겠습니까?</p>
+        <div class="asm-confirm-buttons">
+          <button class="asm-btn asm-btn-cancel">취소</button>
+          <button class="asm-btn asm-btn-confirm-reveal">네, 표시합니다</button>
+        </div>
+      </div>
+    `);
+    actionsEl.querySelector('.asm-btn-cancel').addEventListener('click', () => {
+      setSafeHTML(actionsEl, `
+        <button class="asm-btn asm-btn-block">차단 유지</button>
+        <button class="asm-btn asm-btn-reveal">코드 보기 (위험 감수)</button>
+      `);
+      // 이벤트 재등록
+      rebindDangerActions(overlay, blurTarget, blockId, category);
+    });
+    actionsEl.querySelector('.asm-btn-confirm-reveal').addEventListener('click', () => {
+      removeBlur(blurTarget);
+      setSafeHTML(actionsEl, '<span class="asm-revealed-label">⚠️ 사용자가 표시를 허용했습니다</span>');
+      blockStates.set(blockId, { ...blockStates.get(blockId), state: 'revealed' });
+    });
   });
 
-  // 증거 토글 버튼
   setupEvidenceToggle(overlay);
+}
+
+/**
+ * danger 오버레이 버튼 이벤트 재바인딩 (2단계 확인에서 취소 후)
+ */
+function rebindDangerActions(overlay, blurTarget, blockId, category) {
+  const blockBtn = overlay.querySelector('.asm-btn-block');
+  const revealBtn = overlay.querySelector('.asm-btn-reveal');
+  if (blockBtn) {
+    blockBtn.addEventListener('click', () => {
+      blurTarget.style.display = 'none';
+      setSafeHTML(
+        overlay.querySelector('.asm-danger-actions'),
+        '<span class="asm-blocked-label">🚫 차단됨</span>'
+      );
+      blockStates.set(blockId, { ...blockStates.get(blockId), state: 'blocked' });
+    });
+  }
+  if (revealBtn) {
+    revealBtn.addEventListener('click', () => {
+      const actionsEl = overlay.querySelector('.asm-danger-actions');
+      setSafeHTML(actionsEl, `
+        <div class="asm-confirm-box">
+          <p class="asm-confirm-text">⚠️ 이 코드는 <strong>${escapeHtml(category)}</strong> 위협이 감지된 코드입니다. 정말 표시하시겠습니까?</p>
+          <div class="asm-confirm-buttons">
+            <button class="asm-btn asm-btn-cancel">취소</button>
+            <button class="asm-btn asm-btn-confirm-reveal">네, 표시합니다</button>
+          </div>
+        </div>
+      `);
+      actionsEl.querySelector('.asm-btn-cancel').addEventListener('click', () => {
+        setSafeHTML(actionsEl, `
+          <button class="asm-btn asm-btn-block">차단 유지</button>
+          <button class="asm-btn asm-btn-reveal">코드 보기 (위험 감수)</button>
+        `);
+        rebindDangerActions(overlay, blurTarget, blockId, category);
+      });
+      actionsEl.querySelector('.asm-btn-confirm-reveal').addEventListener('click', () => {
+        removeBlur(blurTarget);
+        setSafeHTML(actionsEl, '<span class="asm-revealed-label">⚠️ 사용자가 표시를 허용했습니다</span>');
+        blockStates.set(blockId, { ...blockStates.get(blockId), state: 'revealed' });
+      });
+    });
+  }
 }
 
 // ─── 유틸리티 ────────────────────────────────────────────────

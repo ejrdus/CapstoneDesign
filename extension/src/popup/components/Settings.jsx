@@ -53,6 +53,21 @@ export default function Settings() {
       <button className="save-btn" onClick={handleSave}>
         {saved ? '저장 완료!' : '설정 저장'}
       </button>
+
+      <div className="settings-section" style={{ marginTop: 16 }}>
+        <div className="settings-section-title">데이터 관리</div>
+        <button
+          className="save-btn"
+          style={{ background: '#dc2626' }}
+          onClick={() => {
+            chrome.storage.local.remove('analysisHistory', () => {
+              alert('분석 기록이 초기화되었습니다.');
+            });
+          }}
+        >
+          분석 기록 초기화
+        </button>
+      </div>
     </div>
   );
 }

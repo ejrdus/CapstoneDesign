@@ -272,6 +272,113 @@
   line-height: 1.4;
 }
 
+/* ─── 배너 제목 행 ────────────────────────────────────────────── */
+
+.asm-banner-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* ─── 신뢰도 뱃지 ────────────────────────────────────────────── */
+
+.asm-confidence-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 8px;
+  border-radius: 10px;
+  line-height: 1.6;
+}
+
+.asm-confidence-caution {
+  background: rgba(245, 158, 11, 0.15);
+  color: #b45309;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.asm-confidence-danger {
+  background: rgba(239, 68, 68, 0.15);
+  color: #dc2626;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+/* ─── 의도(intent) 박스 ──────────────────────────────────────── */
+
+.asm-intent-box {
+  margin: 6px 0 4px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.asm-intent-danger {
+  background: rgba(239, 68, 68, 0.08);
+  border-left: 3px solid #ef4444;
+}
+
+.asm-intent-label {
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+  opacity: 0.7;
+  margin-top: 1px;
+}
+
+.asm-intent-text {
+  flex: 1;
+}
+
+/* ─── 의도(intent) — caution용 인라인 ────────────────────────── */
+
+.asm-banner-intent {
+  margin: 4px 0 2px;
+  font-size: 12px;
+  font-style: italic;
+  opacity: 0.8;
+}
+
+/* ─── 2단계 확인 박스 ────────────────────────────────────────── */
+
+.asm-confirm-box {
+  padding: 4px 0;
+}
+
+.asm-confirm-text {
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0 0 8px 0;
+  color: #991b1b;
+}
+
+.asm-confirm-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.asm-btn-cancel {
+  background: #e5e7eb;
+  color: #374151;
+}
+
+.asm-btn-cancel:hover {
+  background: #d1d5db;
+}
+
+.asm-btn-confirm-reveal {
+  background: #dc2626;
+  color: white;
+}
+
+.asm-btn-confirm-reveal:hover {
+  background: #b91c1c;
+}
+
 /* ─── 페이드아웃 애니메이션 ───────────────────────────────────── */
 
 .asm-fade-out {

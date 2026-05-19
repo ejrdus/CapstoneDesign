@@ -2,13 +2,18 @@ import React, { useState, useEffect } from 'react';
 import AnalysisStatus from './components/AnalysisStatus';
 import CodePreview from './components/CodePreview';
 import Settings from './components/Settings';
+import ConsentScreen from './components/ConsentScreen';
 
 export default function App() {
   const [history, setHistory] = useState([]);
   const [activeTab, setActiveTab] = useState('status');
+  const [consentGiven, setConsentGiven] = useState(null); // null = loading
 
   useEffect(() => {
-    loadHistory();
+    chrome.storage.local.get(['analysisHistory', 'userConsent'], (data) => {
+      setHistory(data.analysisHistory || []);
+      setConsentGiven(data.userConsent === true);
+    });
     chrome.storage.onChanged.addListener((changes) => {
       if (changes.analysisHistory) {
         setHistory(changes.analysisHistory.newValue || []);
@@ -16,9 +21,21 @@ export default function App() {
     });
   }, []);
 
-  async function loadHistory() {
-    const data = await chrome.storage.local.get('analysisHistory');
-    setHistory(data.analysisHistory || []);
+  function handleAcceptConsent() {
+    chrome.storage.local.set({ userConsent: true });
+    setConsentGiven(true);
+  }
+
+  // 로딩 중
+  if (consentGiven === null) return null;
+
+  // 동의 전
+  if (!consentGiven) {
+    return (
+      <div className="app">
+        <ConsentScreen onAccept={handleAcceptConsent} />
+      </div>
+    );
   }
 
   return (

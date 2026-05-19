@@ -22,16 +22,16 @@ import { querySelectorAllDeep, closestDeep } from './shadowDomBridge';
  *   섞이는 self-attack 버그를 막는다 (배너 텍스트가 Claude한테 안전 위장 시도로
  *   오인되어 false positive 발생하는 케이스 차단).
  */
-function extractCleanText(el) {
+export function extractCleanText(el) {
   function walk(node) {
     if (node.nodeType === Node.TEXT_NODE) return node.nodeValue || '';
     if (node.nodeType !== Node.ELEMENT_NODE) return '';
     // 우리 확장의 모든 표식: 클래스 + data 속성
-    if (node.classList) {
-      const cl = node.classList;
-      if (cl.contains('asm-result-banner') || cl.contains('asm-scanning')
-        || cl.contains('asm-banner-inner') || cl.contains('asm-evidence-section')
-        || cl.contains('asm-danger-actions')) return '';
+    if (node.classList && node.classList.length > 0) {
+      for (const cls of node.classList) {
+        // asm- 접두사 클래스 중 블러 상태 클래스만 제외하고 모두 필터링
+        if (cls.startsWith('asm-') && cls !== 'asm-blur-pending' && cls !== 'asm-blur-danger') return '';
+      }
     }
     if (node.hasAttribute) {
       if (node.hasAttribute('data-asm-banner')) return '';
@@ -341,6 +341,8 @@ function detectLanguageFromDOM(element) {
  */
 function isCodeBlockElement(el) {
   if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
+  // ASM 배너/오버레이 내부의 요소는 코드 블록이 아님
+  if (el.closest && el.closest('[data-asm-banner], [data-asm-msg-banner], .asm-result-banner')) return false;
   const tag = el.tagName;
 
   if (tag === 'PRE') return true;

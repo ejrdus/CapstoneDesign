@@ -3,23 +3,19 @@
  *
  * [Blur-First, Analyze-Later 전략]
  *
- * 1. 코드 블록 감지 → 즉시 블러 적용 (codeExtractor에서 처리)
- * 2. 스트리밍 완료 대기 → debounce로 코드 안정화 감지
- * 3. 안정화된 코드를 서버로 분석 요청
+ * 1. 코드 블록 감지 -> 즉시 블러 적용 (codeExtractor에서 처리)
+ * 2. 스트리밍 완료 대기 -> idle 타이머로 스트리밍 종료 감지
+ * 3. 스트리밍 종료 후 코드를 다시 읽어 서버로 분석 요청
  * 4. 결과에 따라 블러 해제 / 경고 / 차단
  */
 
-import { extractNewCodeBlocks, observeCodeBlocks, observeAssistantMessages, ensureMessageId } from './codeExtractor';
+import { extractNewCodeBlocks, observeCodeBlocks, observeAssistantMessages, ensureMessageId, extractCleanText } from './codeExtractor';
 
-// AI 응답 메시지 셀렉터 (registerBlockForMessage의 안전망용)
-// ChatGPT, Claude, Gemini 모두 대응
 const ASSISTANT_MSG_SELECTOR = [
   '[data-message-author-role="assistant"]',
   'article[data-testid^="conversation-turn"]',
-  // Claude
   '[data-testid="chat-message-model"]',
   '.font-claude-message',
-  // Gemini
   'model-response',
   'message-content[data-content-type="model"]',
   '.model-response-text',
@@ -29,19 +25,15 @@ import { detectLanguage } from './languageDetector';
 import { applyAnalysisResult, applyMessageBlur, removeMessageBlur, markMessageDanger } from './overlay';
 import { detectAIService } from '../utils/constants';
 
-// 현재 페이지의 AI 서비스 감지
 const currentAIService = detectAIService();
 
 // ─── 메시지 단위 블러 상태 관리 ───────────────────────────────
-// AI 응답 메시지 전체에 블러를 입히고, 스트리밍이 끝나면(idle) 풀어준다.
 const messageStates = new Map();
-// blockId → msgId 역참조 (코드 블록 분석 결과로 메시지 위험도 갱신)
 const blockToMessage = new Map();
-
-const MESSAGE_IDLE_MS = 1500; // 메시지 스트리밍 idle 판정 시간
+const MESSAGE_IDLE_MS = 3000;
 
 function handleNewMessage(msgId, msgEl) {
-  console.log('[ASM-DEBUG] handleNewMessage 진입:', msgId);
+  console.log('[ASM-DEBUG] handleNewMessage:', msgId);
   applyMessageBlur(msgEl, msgId);
   messageStates.set(msgId, {
     element: msgEl,
@@ -58,9 +50,7 @@ function handleNewMessage(msgId, msgEl) {
 function handleMessageMutation(msgId) {
   const state = messageStates.get(msgId);
   if (!state || state.revealed) return;
-  // 이미 모든 분석이 완료된 경우 idle 리셋하지 않음
-  if (state.settled && state.pendingAnalyses <= state.completedAnalyses) return;
-  // 새 변경이 발생했으니 idle 타이머 리셋
+  state.settled = false;
   scheduleMessageIdle(msgId);
 }
 
@@ -69,50 +59,94 @@ function scheduleMessageIdle(msgId) {
   if (!state) return;
   if (state.idleTimer) clearTimeout(state.idleTimer);
   state.idleTimer = setTimeout(() => {
-    console.log('[ASM-DEBUG] idle 타이머 발동:', msgId,
-      'pending=' + state.pendingAnalyses,
-      'completed=' + state.completedAnalyses);
     state.settled = true;
-    // [ChatGPT 한정] idle 타이머가 발동했으면 스트리밍은 끝난 것 — 카운트 안 맞아도 강제로 풀어준다.
-    // ChatGPT는 코드 블록 1개당 <pre>를 여러 개 만들면서 일부 분석이 누락되는 경우가 있어
-    // pendingAnalyses === completedAnalyses 매칭이 영원히 깨질 수 있다. Claude/Gemini는 정상이므로
-    // ChatGPT에서만 force reveal 한다.
-    // hostname 직접 확인 — detectAIService() 결과 형식에 의존하지 않음
-    const hostname = (typeof window !== 'undefined' && window.location)
-      ? window.location.hostname : '';
-    const isChatGPT = hostname.includes('chatgpt.com') || hostname.includes('openai.com');
-    console.log('[ASM-DEBUG] hostname:', hostname, 'isChatGPT:', isChatGPT,
-      'currentAIService:', currentAIService);
-    tryRevealMessage(msgId, isChatGPT);
+    console.log('[ASM-DEBUG] idle 타이머 발동:', msgId);
+    // 스트리밍 완료 — live DOM에서 코드 블록을 다시 스캔해서 분석
+    const analysisStarted = rescanMessageBlocks(msgId);
+    if (!analysisStarted) {
+      // 분석할 코드 블록이 없으면 바로 블러 해제
+      tryRevealMessage(msgId, true);
+    }
+    // 분석이 시작됐으면 notifyBlockAnalyzed에서 블러 해제됨
   }, MESSAGE_IDLE_MS);
+}
+
+/**
+ * 스트리밍 종료 후, live DOM에서 메시지를 다시 찾아 코드 블록을 분석.
+ * ChatGPT의 React re-render로 인해 저장된 element 참조가 무효화될 수 있으므로
+ * document.querySelector로 현재 DOM에서 직접 검색한다.
+ */
+/**
+ * 스트리밍 종료 후, live DOM에서 메시지를 다시 찾아 코드 블록을 분석.
+ * @returns {boolean} 분석이 시작되었으면 true, 아니면 false
+ */
+function rescanMessageBlocks(msgId) {
+  // live DOM에서 메시지 요소를 직접 검색
+  const liveMsg = document.querySelector(`[data-asm-msg-id="${msgId}"]`);
+  console.log('[ASM-DEBUG] rescan 시작:', msgId, 'liveMsg=' + !!liveMsg);
+  if (!liveMsg) return false;
+
+  // 메시지 내 모든 pre, code 요소를 탐색
+  const codeElements = liveMsg.querySelectorAll('pre, code');
+  console.log('[ASM-DEBUG] rescan 요소 수:', codeElements.length);
+
+  for (const el of codeElements) {
+    // 우리 확장의 배너/오버레이 내부 요소는 스킵
+    if (el.closest && el.closest('[data-asm-banner], [data-asm-msg-banner], .asm-result-banner')) continue;
+
+    // 이미 제대로 분석된 블록은 스킵
+    const existingId = el.getAttribute('data-asm-id');
+    if (existingId && properlyAnalyzed.has(existingId)) continue;
+
+    // textContent로 실제 코드 읽기
+    const code = (el.textContent || '').trim();
+    if (code.length < 10) continue; // 짧은 헤더/라벨 무시
+
+    console.log('[ASM-DEBUG] rescan 분석 대상 발견:', code.length, 'chars');
+
+    // blockId 부여 (없으면 생성)
+    let blockId = existingId;
+    if (!blockId) {
+      blockId = 'asm-rescan-' + Date.now();
+      el.setAttribute('data-asm-id', blockId);
+    } else {
+      lockedBlocks.delete(blockId);
+    }
+
+    // 블록을 메시지에 등록 → 분석 완료 시 notifyBlockAnalyzed가 블러 해제
+    const msgState = messageStates.get(msgId);
+    if (msgState && !blockToMessage.has(blockId)) {
+      blockToMessage.set(blockId, msgId);
+      msgState.pendingAnalyses += 1;
+    }
+
+    const lang = detectLanguageFromElement(el);
+    executeAnalysis(blockId, code, lang);
+    return true; // 분석 시작됨
+  }
+  console.log('[ASM-DEBUG] rescan: 분석할 코드 블록 없음');
+  return false;
+}
+
+function detectLanguageFromElement(el) {
+  const cls = el.className || '';
+  const m = cls.match(/language-(\w+)/);
+  if (m) return m[1];
+  const codeChild = el.querySelector && el.querySelector('code[class*="language-"]');
+  if (codeChild) {
+    const m2 = (codeChild.className || '').match(/language-(\w+)/);
+    if (m2) return m2[1];
+  }
+  return 'unknown';
 }
 
 function tryRevealMessage(msgId, force) {
   const state = messageStates.get(msgId);
-  if (!state) {
-    console.log('[ASM-DEBUG] tryReveal:', msgId, '→ NO STATE');
-    return;
-  }
-  if (state.revealed) {
-    console.log('[ASM-DEBUG] tryReveal:', msgId, '→ already revealed');
-    return;
-  }
-  // 스트리밍이 idle 상태여야 함
-  if (!state.settled) {
-    console.log('[ASM-DEBUG] tryReveal:', msgId, '→ NOT SETTLED (idle 타이머 안 끝남)');
-    return;
-  }
-  // 진행 중인 코드 블록 분석이 있으면 대기 (force=true면 무시 — ChatGPT 한정)
-  if (!force && state.pendingAnalyses > state.completedAnalyses) {
-    console.log('[ASM-DEBUG] tryReveal:', msgId,
-      '→ COUNT MISMATCH pending=' + state.pendingAnalyses,
-      'completed=' + state.completedAnalyses);
-    return;
-  }
+  if (!state || state.revealed) return;
+  if (!state.settled) return;
+  if (!force && state.pendingAnalyses > state.completedAnalyses) return;
 
-  console.log('[ASM-DEBUG] tryReveal:', msgId, '→ REVEALING!',
-    'danger=' + state.dangerCount,
-    force ? '(FORCED by idle - ChatGPT)' : '');
+  console.log('[ASM-DEBUG] tryReveal:', msgId, '→ REVEALING! danger=' + state.dangerCount);
 
   if (state.dangerCount > 0) {
     markMessageDanger(state.element, msgId, `${state.dangerCount}개의 위험한 코드 블록이 감지되었습니다.`);
@@ -124,12 +158,7 @@ function tryRevealMessage(msgId, force) {
 
 function registerBlockForMessage(blockId, element) {
   if (!element || !element.closest) return;
-
-  // 1차: 이미 마킹된 메시지를 찾기
   let msgEl = element.closest('[data-asm-msg-id]');
-
-  // 2차 안전망: 마킹되지 않았다면 원본 셀렉터로 직접 끌어와서 retroactive 블러
-  // 단 historical로 마킹된 경우는 건드리지 않음
   if (!msgEl) {
     const candidate = element.closest(ASSISTANT_MSG_SELECTOR);
     if (candidate) {
@@ -137,94 +166,92 @@ function registerBlockForMessage(blockId, element) {
       if (existingState !== 'historical' && existingState !== 'revealed') {
         const id = ensureMessageId(candidate);
         if (id && !messageStates.has(id)) {
-          console.log(`[AI Script Monitor] Retroactive 메시지 블러: ${id}`);
           handleNewMessage(id, candidate);
         }
         msgEl = candidate;
       }
     }
   }
-
-  if (!msgEl) {
-    console.log('[ASM-DEBUG] registerBlock:', blockId, '→ NO MSG (메시지 못 찾음)');
-    return;
-  }
+  if (!msgEl) return;
   const msgId = msgEl.getAttribute('data-asm-msg-id');
   const msgState = messageStates.get(msgId);
-  if (!msgState) {
-    console.log('[ASM-DEBUG] registerBlock:', blockId, '→ NO MSG STATE (historical일 듯)', msgId);
-    return; // historical 등은 무시
-  }
-  if (blockToMessage.has(blockId)) {
-    console.log('[ASM-DEBUG] registerBlock:', blockId, '→ 이미 등록됨');
-    return;
-  }
+  if (!msgState) return;
+  if (blockToMessage.has(blockId)) return;
   blockToMessage.set(blockId, msgId);
   msgState.pendingAnalyses += 1;
-  console.log('[ASM-DEBUG] registerBlock:', blockId, '→', msgId,
-    'pending=' + msgState.pendingAnalyses);
-  // 새 코드 블록이 발견되면 idle 카운트도 다시 시작
   scheduleMessageIdle(msgId);
 }
 
 function notifyBlockAnalyzed(blockId, result) {
   const msgId = blockToMessage.get(blockId);
-  if (!msgId) {
-    console.log('[ASM-DEBUG] notifyAnalyzed:', blockId, '→ NO MSG (blockToMessage 매핑 없음)');
-    return;
-  }
+  if (!msgId) return;
   const msgState = messageStates.get(msgId);
-  if (!msgState) {
-    console.log('[ASM-DEBUG] notifyAnalyzed:', blockId, '→ NO MSG STATE');
-    return;
-  }
+  if (!msgState) return;
   msgState.completedAnalyses += 1;
   if (result && result.riskLevel === 'danger') {
     msgState.dangerCount += 1;
   }
-  console.log('[ASM-DEBUG] notifyAnalyzed:', blockId, '→', msgId,
-    'pending=' + msgState.pendingAnalyses,
-    'completed=' + msgState.completedAnalyses,
-    'risk=' + (result ? result.riskLevel : 'null'));
-  // 모든 분석이 완료되면 settled를 강제 — idle 타이머 의존 없이 즉시 해제
-  if (msgState.pendingAnalyses <= msgState.completedAnalyses) {
-    msgState.settled = true;
+  // 모든 분석이 완료되었으면 블러 해제
+  if (msgState.settled && msgState.completedAnalyses >= msgState.pendingAnalyses) {
+    tryRevealMessage(msgId, true);
   }
-  tryRevealMessage(msgId);
 }
 
-// 블록별 debounce 타이머 관리
+// ─── 분석 상태 관리 ──────────────────────────────────────────
 const debounceTimers = new Map();
-// 블록별 최신 코드 내용 추적 (스트리밍 중 업데이트됨)
 const latestCodeMap = new Map();
-// 이미 분석 요청을 보낸 코드 해시 (중복 방지)
 const analyzedHashes = new Set();
-// 확정 판정이 내려진 블록 — 이후 재분석 차단 (self-attack 버그 방지)
 const lockedBlocks = new Set();
+// 서버/캐시로 제대로 분석 완료된 블록 (rescan에서 스킵용)
+const properlyAnalyzed = new Set();
 
-const DEBOUNCE_MS = 800; // 스트리밍 안정화 대기 시간
+const DEBOUNCE_MS = 800;
+
+// ─── 분석 결과 캐싱 ─────────────────────────────────────────
+const CACHE_PREFIX = 'asm-cache-';
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+async function getCachedResult(codeHash) {
+  return new Promise((resolve) => {
+    const key = `${CACHE_PREFIX}${codeHash}`;
+    chrome.storage.local.get(key, (data) => {
+      const cached = data[key];
+      if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+        resolve(cached.result);
+      } else {
+        resolve(null);
+      }
+    });
+  });
+}
+
+function setCachedResult(codeHash, result) {
+  const key = `${CACHE_PREFIX}${codeHash}`;
+  chrome.storage.local.set({ [key]: { result, timestamp: Date.now() } });
+}
 
 function isLockedVerdict(level) {
   return level === 'safe' || level === 'caution' || level === 'danger';
 }
 
-/**
- * 코드 블록에 대해 debounce 적용 후 분석 요청
- * 스트리밍 중에는 타이머가 계속 리셋되다가, 코드가 안정화되면 분석 실행
- */
+function sendUpdateStatus(result, detectedLang, blockId) {
+  console.log('[ASM-DEBUG] UPDATE_STATUS 전송:', blockId, 'risk=' + result.riskLevel);
+  try {
+    chrome.runtime.sendMessage({
+      type: 'UPDATE_STATUS',
+      payload: { ...result, language: detectedLang, blockId, aiService: currentAIService },
+    });
+  } catch (e) {
+    console.error('[ASM-DEBUG] UPDATE_STATUS 실패:', e);
+  }
+}
+
 function scheduleAnalysis(blockId, code, language, blurTarget, element) {
-  // 이미 확정 판정이 있는 블록은 재분석 안 함 (self-attack 버그 방지)
   if (lockedBlocks.has(blockId)) return;
-
-  // 최신 코드 저장
   latestCodeMap.set(blockId, { code, language, blurTarget, element });
-
-  // 기존 타이머 리셋
   if (debounceTimers.has(blockId)) {
     clearTimeout(debounceTimers.get(blockId));
   }
-
-  // 새 타이머 설정
   const timer = setTimeout(() => {
     debounceTimers.delete(blockId);
     const latest = latestCodeMap.get(blockId);
@@ -232,95 +259,88 @@ function scheduleAnalysis(blockId, code, language, blurTarget, element) {
       executeAnalysis(blockId, latest.code, latest.language);
     }
   }, DEBOUNCE_MS);
-
   debounceTimers.set(blockId, timer);
 }
 
-/**
- * 서버에 분석 요청 실행
- */
 async function executeAnalysis(blockId, code, language) {
-  // 이미 확정 판정이 내려진 블록은 재분석 금지 (race condition 방지)
-  if (lockedBlocks.has(blockId)) {
-    return;
-  }
+  if (lockedBlocks.has(blockId)) return;
 
-  // 너무 짧은 코드(스트리밍 시작 직후 등)는 분석 보류
-  // — 블러는 이미 적용된 상태이고, 이후 content update가 들어오면 다시 스케줄됨
+  // 너무 짧은 코드 — 스트리밍 중일 수 있음. 블러만 해제하고 rescan에서 다시 시도.
   if (!code || code.trim().length < 5) {
+    console.log('[ASM-DEBUG] executeAnalysis 짧은 코드 스킵:', blockId, 'len=' + (code ? code.trim().length : 0));
+    lockedBlocks.add(blockId);
+    applyAnalysisResult(blockId, { riskLevel: 'safe', _noBanner: true });
+    notifyBlockAnalyzed(blockId, { riskLevel: 'safe' });
     return;
   }
 
   const codeHash = hashCode(code);
+  const detectedLang = language !== 'unknown' ? language : detectLanguage(code);
 
-  // 동일 코드 중복 분석 방지 — 메시지 블러 해제를 위해 완료 알림은 보냄
+  console.log('[ASM-DEBUG] executeAnalysis 분석 시작:', blockId, 'len=' + code.trim().length, 'hash=' + codeHash);
+
+  // 동일 코드 중복 분석 방지
   if (analyzedHashes.has(codeHash)) {
-    const safeResult = { riskLevel: 'safe' };
-    applyAnalysisResult(blockId, safeResult);
-    notifyBlockAnalyzed(blockId, safeResult);
+    console.log('[ASM-DEBUG] 중복 해시 스킵:', blockId);
+    lockedBlocks.add(blockId);
+    properlyAnalyzed.add(blockId);
+    applyAnalysisResult(blockId, { riskLevel: 'safe', _noBanner: true });
+    notifyBlockAnalyzed(blockId, { riskLevel: 'safe' });
     return;
   }
   analyzedHashes.add(codeHash);
 
-  const detectedLang = language !== 'unknown' ? language : detectLanguage(code);
+  // 캐시 확인
+  const cached = await getCachedResult(codeHash);
+  if (cached) {
+    console.log('[ASM-DEBUG] 캐시 히트:', blockId, 'risk=' + cached.riskLevel);
+    if (isLockedVerdict(cached.riskLevel)) lockedBlocks.add(blockId);
+    properlyAnalyzed.add(blockId);
+    applyAnalysisResult(blockId, cached);
+    notifyBlockAnalyzed(blockId, cached);
+    sendUpdateStatus(cached, detectedLang, blockId);
+    return;
+  }
 
+  // 서버 분석
   try {
-    // Background Script를 통해 서버에 분석 요청
+    console.log('[ASM-DEBUG] 서버 분석 요청:', blockId);
     const response = await chrome.runtime.sendMessage({
       type: 'ANALYZE_CODE',
-      payload: {
-        code,
-        language: detectedLang,
-        blockId,
-        aiService: currentAIService,
-      },
+      payload: { code, language: detectedLang, blockId, aiService: currentAIService },
     });
 
     if (response && response.error) {
       console.error('[AI Script Monitor] 분석 오류:', response.error);
-      // 에러 시 블러 해제 (사용성 우선)
-      applyAnalysisResult(blockId, {
-        riskLevel: 'unknown',
-        category: '분석 오류',
-        reason: response.error,
-      });
+      const errResult = { riskLevel: 'unknown', category: '분석 오류', reason: response.error };
+      applyAnalysisResult(blockId, errResult);
+      notifyBlockAnalyzed(blockId, errResult);
+      sendUpdateStatus(errResult, detectedLang, blockId);
       return;
     }
 
-    // 확정 판정이면 잠금을 먼저 걸어둠 — applyAnalysisResult의 DOM 변경이
-    // 다시 scheduleAnalysis를 트리거해도 새 분석이 시작되지 않도록
     if (response && isLockedVerdict(response.riskLevel)) {
       lockedBlocks.add(blockId);
       if (debounceTimers.has(blockId)) {
         clearTimeout(debounceTimers.get(blockId));
         debounceTimers.delete(blockId);
       }
+      setCachedResult(codeHash, response);
     }
 
-    // 분석 결과를 오버레이에 반영
+    properlyAnalyzed.add(blockId);
     applyAnalysisResult(blockId, response);
     notifyBlockAnalyzed(blockId, response);
-
-    // Popup에 상태 업데이트
-    chrome.runtime.sendMessage({
-      type: 'UPDATE_STATUS',
-      payload: { ...response, language: detectedLang, blockId, aiService: currentAIService },
-    });
+    sendUpdateStatus(response, detectedLang, blockId);
   } catch (error) {
     console.error('[AI Script Monitor] 분석 오류:', error);
-    const errorResult = {
-      riskLevel: 'unknown',
-      category: '통신 오류',
-      reason: '서버 연결에 실패했습니다.',
-    };
-    applyAnalysisResult(blockId, errorResult);
-    notifyBlockAnalyzed(blockId, errorResult);
+    const errResult = { riskLevel: 'unknown', category: '통신 오류', reason: '서버 연결에 실패했습니다.' };
+    applyAnalysisResult(blockId, errResult);
+    notifyBlockAnalyzed(blockId, errResult);
+    sendUpdateStatus(errResult, detectedLang, blockId);
   }
 }
 
-/**
- * 간단한 문자열 해시
- */
 function hashCode(str) {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
@@ -333,28 +353,22 @@ function hashCode(str) {
 
 // ─── 초기화 ──────────────────────────────────────────────────
 
-// 1. Assistant 메시지 감지 — 새 메시지 전체에 블러 적용 (코드 블록 옵저버보다 먼저 등록)
 observeAssistantMessages(handleNewMessage, handleMessageMutation);
 
-// 2. 이미 페이지에 있는 코드 블록 스캔 (대화 히스토리 포함)
 const initialBlocks = extractNewCodeBlocks();
 initialBlocks.forEach((block) => {
   registerBlockForMessage(block.blockId, block.element);
   scheduleAnalysis(block.blockId, block.code, block.language, block.blurTarget, block.element);
 });
 
-// 3. 새 코드 블록 실시간 감시
 observeCodeBlocks(
-  // onNewBlock: 새 코드 블록 발견 시 (블러는 이미 적용된 상태)
   (block) => {
     registerBlockForMessage(block.blockId, block.element);
     scheduleAnalysis(block.blockId, block.code, block.language, block.blurTarget, block.element);
   },
-  // onContentUpdate: 스트리밍 중 기존 블록의 내용이 변경될 때
   (blockId, newCode, element) => {
     const existing = latestCodeMap.get(blockId);
     if (existing) {
-      // debounce 타이머 리셋 — 코드가 아직 스트리밍 중이므로 분석 지연
       scheduleAnalysis(blockId, newCode, existing.language, existing.blurTarget, element);
     }
   }
