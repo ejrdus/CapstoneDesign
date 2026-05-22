@@ -2,7 +2,8 @@
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
-:root {
+:root,
+[data-theme="dark"] {
   --bg: #0a0f1e;
   --bg-card: rgba(255,255,255,0.04);
   --bg-card-hover: rgba(255,255,255,0.07);
@@ -19,8 +20,34 @@
   --caution-bg: rgba(234,179,8,0.1);
   --safe: #22c55e;
   --safe-bg: rgba(34,197,94,0.1);
+  --header-gradient: linear-gradient(160deg, #151b33 0%, #0a0f1e 100%);
+  --scrollbar-thumb: rgba(255,255,255,0.08);
+  --scrollbar-thumb-hover: rgba(255,255,255,0.15);
   --radius: 14px;
   --radius-sm: 10px;
+}
+
+/* 라이트 테마 — Settings 에서 토글 가능 */
+[data-theme="light"] {
+  --bg: #f7f8fb;
+  --bg-card: #ffffff;
+  --bg-card-hover: #f1f3f9;
+  --bg-input: #f1f3f9;
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #94a3b8;
+  --border: rgba(15,23,42,0.08);
+  --accent: #4f46e5;
+  --accent-glow: rgba(79,70,229,0.18);
+  --danger: #dc2626;
+  --danger-bg: rgba(220,38,38,0.08);
+  --caution: #d97706;
+  --caution-bg: rgba(217,119,6,0.1);
+  --safe: #16a34a;
+  --safe-bg: rgba(22,163,74,0.1);
+  --header-gradient: linear-gradient(160deg, #ffffff 0%, #eef2ff 100%);
+  --scrollbar-thumb: rgba(15,23,42,0.12);
+  --scrollbar-thumb-hover: rgba(15,23,42,0.22);
 }
 
 .app {
@@ -36,7 +63,7 @@
 /* ─── 헤더 ─────────────────────────────────────────── */
 
 .app-header {
-  background: linear-gradient(160deg, #151b33 0%, #0a0f1e 100%);
+  background: var(--header-gradient);
   padding: 22px 20px 18px;
   border-bottom: 1px solid var(--border);
   position: sticky;
@@ -411,5 +438,160 @@
 
 .app::-webkit-scrollbar { width: 5px; }
 .app::-webkit-scrollbar-track { background: transparent; }
-.app::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 3px; }
-.app::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.15); }
+.app::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 3px; }
+.app::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
+
+/* ─── 히스토리 검색·필터 ─────────────────────────────── */
+
+.history-toolbar {
+  padding: 8px 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.history-search {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-family: inherit;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.history-search:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.history-search::placeholder { color: var(--text-muted); }
+
+.filter-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.filter-chip {
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  padding: 5px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 14px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.15s ease;
+}
+
+.filter-chip:hover { color: var(--text-primary); }
+
+.filter-chip.active.all { background: var(--accent); color: white; border-color: var(--accent); }
+.filter-chip.active.danger { background: var(--danger-bg); color: var(--danger); border-color: var(--danger); }
+.filter-chip.active.caution { background: var(--caution-bg); color: var(--caution); border-color: var(--caution); }
+.filter-chip.active.safe { background: var(--safe-bg); color: var(--safe); border-color: var(--safe); }
+
+/* ─── 위협 유형별 mini chart ─────────────────────────── */
+
+.threat-chart {
+  margin: 4px 16px 8px;
+  padding: 12px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.threat-chart-title {
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  margin-bottom: 10px;
+}
+
+.threat-chart-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.threat-row {
+  display: grid;
+  grid-template-columns: 78px 1fr 28px;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.threat-row-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.threat-row-bar {
+  height: 8px;
+  background: var(--bg-input);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.threat-row-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), #a855f7);
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+.threat-row-count {
+  text-align: right;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.threat-chart-total {
+  margin-top: 10px;
+  font-size: 10px;
+  color: var(--text-muted);
+  text-align: right;
+}
+
+/* ─── 테마 토글 (Settings) ───────────────────────────── */
+
+.theme-toggle {
+  display: flex;
+  gap: 6px;
+  background: var(--bg-input);
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.theme-option {
+  flex: 1;
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+  border-radius: 7px;
+  transition: all 0.2s ease;
+}
+
+.theme-option.active {
+  background: var(--accent);
+  color: white;
+  box-shadow: 0 2px 8px var(--accent-glow);
+}
+
+.theme-option:hover:not(.active) { color: var(--text-primary); }

@@ -1,14 +1,18 @@
 import React, { useState, useEffect } from 'react';
 
+const THEME_STORAGE_KEY = 'asmTheme';
+
 export default function Settings() {
   const [serverUrl, setServerUrl] = useState('http://localhost:3000');
   const [autoAnalysis, setAutoAnalysis] = useState(true);
+  const [theme, setTheme] = useState('dark');
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
-    chrome.storage.local.get(['serverUrl', 'settings'], (data) => {
+    chrome.storage.local.get(['serverUrl', 'settings', THEME_STORAGE_KEY], (data) => {
       if (data.serverUrl) setServerUrl(data.serverUrl);
       if (data.settings) setAutoAnalysis(data.settings.autoAnalysis ?? true);
+      if (data[THEME_STORAGE_KEY]) setTheme(data[THEME_STORAGE_KEY]);
     });
   }, []);
 
@@ -16,13 +20,35 @@ export default function Settings() {
     chrome.storage.local.set({
       serverUrl,
       settings: { autoAnalysis },
+      [THEME_STORAGE_KEY]: theme,
     });
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };
 
+  const handleThemeChange = (next) => {
+    setTheme(next);
+    // 즉시 반영 — 사용자가 저장 누르지 않아도 미리보기 가능
+    document.documentElement.setAttribute('data-theme', next);
+    chrome.storage.local.set({ [THEME_STORAGE_KEY]: next });
+  };
+
   return (
     <div className="settings">
+      <div className="settings-section">
+        <div className="settings-section-title">테마</div>
+        <div className="theme-toggle">
+          <button
+            className={`theme-option ${theme === 'dark' ? 'active' : ''}`}
+            onClick={() => handleThemeChange('dark')}
+          >🌙 다크</button>
+          <button
+            className={`theme-option ${theme === 'light' ? 'active' : ''}`}
+            onClick={() => handleThemeChange('light')}
+          >☀️ 라이트</button>
+        </div>
+      </div>
+
       <div className="settings-section">
         <div className="settings-section-title">서버 설정</div>
         <div className="setting-item">
