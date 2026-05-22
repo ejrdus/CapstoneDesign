@@ -1,0 +1,96 @@
+name: LLM Evaluation (manual)
+
+# 평가는 Anthropic API를 호출하므로 비용이 발생한다.
+# 수동 트리거(workflow_dispatch)로만 실행 — 자동 실행되지 않는다.
+#
+# 사전 준비:
+#   Repo Settings → Secrets and variables → Actions → New repository secret
+#   - ANTHROPIC_API_KEY: Anthropic API 키
+#
+# 트리거: Actions 탭 → "LLM Evaluation (manual)" → Run workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      min_f1:
+        description: '최소 F1 score (이하면 fail). 0.8 = 80%'
+        required: false
+        default: '0.8'
+      label:
+        description: '결과 파일 라벨'
+        required: false
+        default: 'ci'
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install dependencies
+        working-directory: server
+        run: npm ci
+
+      - name: Start server in background
+        working-directory: server
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          NODE_ENV: test
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::error::ANTHROPIC_API_KEY secret이 설정되지 않았습니다. Repo Settings에서 추가하세요."
+            exit 1
+          fi
+          nohup node src/index.js > server.log 2>&1 &
+          echo $! > server.pid
+          # 헬스 체크 대기 (최대 30초)
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3000/health > /dev/null; then
+              echo "서버 기동 완료 ($i초)"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::서버 기동 실패"
+          cat server.log
+          exit 1
+
+      - name: Run evaluation
+        working-directory: server
+        run: npm run evaluate -- --name ${{ inputs.label }}
+
+      - name: Check F1 threshold
+        working-directory: server
+        run: |
+          MIN_F1="${{ inputs.min_f1 }}"
+          LATEST=$(ls -t tests/results/${{ inputs.label }}-*.json | head -1)
+          F1=$(node -e "const r=require('./'+process.argv[1]); console.log(r.metrics.f1.toFixed(4))" "$LATEST")
+          echo "측정 F1: $F1 (임계값: $MIN_F1)"
+          PASS=$(node -e "process.stdout.write($F1 >= $MIN_F1 ? 'pass' : 'fail')")
+          if [ "$PASS" = "fail" ]; then
+            echo "::error::F1 score $F1 가 임계값 $MIN_F1 미만입니다."
+            exit 1
+          fi
+
+      - name: Upload evaluation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evaluation-${{ inputs.label }}-${{ github.run_id }}
+          path: server/tests/results/
+
+      - name: Stop server
+        if: always()
+        working-directory: server
+        run: |
+          if [ -f server.pid ]; then kill $(cat server.pid) || true; fi
+          if [ -f server.log ]; then echo '--- server.log ---'; cat server.log; fi

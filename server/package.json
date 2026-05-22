@@ -7,6 +7,9 @@
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
     "test": "jest",
+    "test:prefilter": "node tests/test-prefilter.js",
+    "test:anonymizer": "node tests/test-anonymizer.js",
+    "test:unit": "npm run test:prefilter && npm run test:anonymizer",
     "evaluate": "node tests/evaluate.js"
   },
   "dependencies": {

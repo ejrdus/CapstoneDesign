@@ -1,0 +1,39 @@
+name: Unit Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'server/**'
+      - '.github/workflows/test.yml'
+  pull_request:
+    paths:
+      - 'server/**'
+      - '.github/workflows/test.yml'
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    name: Prefilter & Anonymizer unit tests (no LLM calls)
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install dependencies
+        working-directory: server
+        run: npm ci
+
+      - name: Run prefilter test (zero false negatives gate)
+        working-directory: server
+        run: npm run test:prefilter
+
+      - name: Run anonymizer test (pattern coverage gate)
+        working-directory: server
+        run: npm run test:anonymizer
