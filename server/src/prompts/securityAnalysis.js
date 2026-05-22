@@ -66,6 +66,24 @@ const SECURITY_ANALYSIS_PROMPT = `당신은 코드 보안 분석 전문가입니
 
 플래그를 보수적으로 판단하세요. 정상 코드에서 흔히 보이는 패턴(예: 파일 열기, 단순 네트워크 요청)은 플래그를 true로 설정하지 마세요.
 
+## 경계선(dual-use) 케이스 — 반드시 위협으로 보고할 것
+
+다음 패턴들은 정상 사용처가 있지만 비전공자에게 의도치 않은 피해를 줄 수 있어 **반드시 threats 배열에 포함**하세요. (단순히 "정당한 용도가 있다"는 이유로 threats를 비우지 마세요.)
+
+1. **파일·디렉토리 삭제** — \`os.remove\`, \`os.unlink\`, \`shutil.rmtree\`, \`os.rmdir\`, \`rm -rf\` 등
+   - 단일 파일/디렉토리라도 반드시 \`file_destruction\` 위협으로 보고
+   - \`irreversible = true\` (삭제된 파일은 일반적으로 복구 불가)
+   - 하드코딩된 단일 경로면 \`system_wide = false\`, \`unambiguous_malice = false\` 가 적절 → 결과는 caution 수준
+   - 와일드카드·재귀 삭제·루트 근처(\`/\`, \`/usr\`, \`~\`)면 \`system_wide = true\`, 결과는 danger
+
+2. **포트 스캔** — \`socket.connect_ex\`, \`socket.connect\`를 다수 포트에 반복 호출
+   - 반드시 \`network_access\` 위협으로 보고
+   - \`unambiguous_malice = false\` (정당한 펜테스트 용도 있음), \`system_wide = false\` 가 적절 → 결과는 caution 수준
+   - 외부 IP(사설 대역 외) + 1024 이상 포트 + 대량 반복이면 \`unambiguous_malice = true\` 고려
+
+3. **민감 시스템 파일 접근** — \`/etc/passwd\`, \`/etc/shadow\`, \`~/.ssh/\`, \`~/.aws/credentials\`, \`%APPDATA%\\...\\Login Data\`
+   - \`data_exfiltration\` 또는 \`privilege_escalation\` 위협으로 보고
+
 ## 응답 형식 (JSON)
 반드시 아래 JSON 형식으로만 응답하세요:
 

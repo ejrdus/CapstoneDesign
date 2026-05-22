@@ -3,6 +3,7 @@ const router = express.Router();
 const { validateAnalyzeRequest } = require('../utils/validator');
 const { preprocessCode } = require('../utils/codePreprocessor');
 const { anonymize, logRedactions } = require('../utils/anonymizer');
+const { prefilter } = require('../utils/prefilter');
 const { analyzeWithLLM } = require('../services/llmService');
 const { classifyRisk } = require('../services/riskClassifier');
 const { recordAnalysis, getSessionHistory } = require('../services/sessionTracker');
@@ -30,19 +31,40 @@ router.post('/', async (req, res, next) => {
     const { anonymized: anonymizedCode, replacements } = anonymize(cleanCode);
     logRedactions(replacements);
 
-    // 3. LLM 의미 분석 (비식별화된 코드로 분석, 인젝션 방어는 시스템 프롬프트에 내장됨)
-    const llmResult = await analyzeWithLLM(anonymizedCode, language);
+    // 2-2. 사전필터 — 위험 패턴이 전혀 없는 짧은 코드는 LLM 호출 스킵
+    const pf = prefilter(anonymizedCode);
 
-    // 4. 단일 코드 블록 위험도 판정
-    const riskResult = classifyRisk(llmResult);
+    let result;
+    if (pf.skip) {
+      console.log(`[Prefilter] LLM skip (${pf.reason})`);
+      result = {
+        riskLevel: 'safe',
+        category: '정상',
+        reason: '위험 패턴이 감지되지 않았습니다 (사전필터).',
+        details: {
+          intent: '단순 코드 — 위험 호출/네트워크/암호화/난독화 패턴 없음',
+          confidence: 0.85,
+          threats: [],
+          prefiltered: true,
+          prefilterReason: pf.reason,
+        },
+        analyzedAt: new Date().toISOString(),
+      };
+    } else {
+      // 3. LLM 의미 분석 (비식별화된 코드로 분석, 인젝션 방어는 시스템 프롬프트에 내장됨)
+      const llmResult = await analyzeWithLLM(anonymizedCode, language);
 
-    const result = {
-      riskLevel: riskResult.riskLevel,
-      category: riskResult.category,
-      reason: riskResult.reason,
-      details: riskResult.details,
-      analyzedAt: new Date().toISOString(),
-    };
+      // 4. 단일 코드 블록 위험도 판정
+      const riskResult = classifyRisk(llmResult);
+
+      result = {
+        riskLevel: riskResult.riskLevel,
+        category: riskResult.category,
+        reason: riskResult.reason,
+        details: { ...riskResult.details, prefiltered: false, prefilterReason: pf.reason },
+        analyzedAt: new Date().toISOString(),
+      };
+    }
 
     // 5. 세션 누적 분석 (다단계 공격 체인 탐지)
     recordAnalysis(req.ip, aiService, result);
