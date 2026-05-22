@@ -16,15 +16,30 @@ const { preprocessCode } = require('../src/utils/codePreprocessor');
 
 const SAMPLES_DIR = path.join(__dirname, 'samples');
 
+// 확장자 → 언어 매핑
+const EXT_TO_LANG = {
+  '.py': 'python',
+  '.go': 'go',
+  '.rs': 'rust',
+  '.c': 'c',
+  '.cpp': 'cpp',
+  '.java': 'java',
+  '.rb': 'ruby',
+};
+
 function checkDir(label, dir) {
-  const files = fs.readdirSync(dir).filter((f) => f.endsWith('.py')).sort();
+  const files = fs.readdirSync(dir)
+    .filter((f) => Object.keys(EXT_TO_LANG).some((ext) => f.endsWith(ext)))
+    .sort();
   const results = [];
   for (const file of files) {
     const code = fs.readFileSync(path.join(dir, file), 'utf-8');
+    const ext = '.' + file.split('.').pop();
+    const language = EXT_TO_LANG[ext];
     const clean = preprocessCode(code);
     const { anonymized } = anonymize(clean);
-    const pf = prefilter(anonymized);
-    results.push({ file, label, ...pf });
+    const pf = prefilter(anonymized, language);
+    results.push({ file, label, language, ...pf });
   }
   return results;
 }

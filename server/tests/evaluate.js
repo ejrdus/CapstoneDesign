@@ -25,6 +25,25 @@ const SERVER_URL = process.env.SERVER_URL || 'http://localhost:3000';
 const SAMPLES_DIR = path.join(__dirname, 'samples');
 const RESULTS_DIR = path.join(__dirname, 'results');
 
+// 확장자 → 언어 매핑 (사전필터·프롬프트가 사용)
+const EXT_TO_LANG = {
+  '.py': 'python',
+  '.go': 'go',
+  '.rs': 'rust',
+  '.c': 'c',
+  '.cpp': 'cpp',
+  '.cc': 'cpp',
+  '.java': 'java',
+  '.rb': 'ruby',
+};
+const SUPPORTED_EXTS = Object.keys(EXT_TO_LANG);
+
+function languageFor(filename) {
+  const dot = filename.lastIndexOf('.');
+  if (dot === -1) return 'unknown';
+  return EXT_TO_LANG[filename.slice(dot)] || 'unknown';
+}
+
 // --- CLI 인자 파싱 ---
 function parseArgs(argv) {
   const args = { name: null, compare: null };
@@ -36,7 +55,7 @@ function parseArgs(argv) {
   return args;
 }
 
-async function analyze(code, sampleName, maxRetries = 3) {
+async function analyze(code, sampleName, language, maxRetries = 3) {
   // 샘플마다 다른 aiService 값을 사용 → 세션 누적 분석 비활성화 (단일 코드 평가)
   const sessionSalt = crypto.randomBytes(8).toString('hex');
   let lastErr = null;
@@ -46,7 +65,7 @@ async function analyze(code, sampleName, maxRetries = 3) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         code,
-        language: 'python',
+        language,
         aiService: `eval-${sampleName}-${sessionSalt}`,
       }),
     });
@@ -65,15 +84,18 @@ async function analyze(code, sampleName, maxRetries = 3) {
 }
 
 async function runDir(label, dir) {
-  const files = fs.readdirSync(dir).filter((f) => f.endsWith('.py')).sort();
+  const files = fs.readdirSync(dir)
+    .filter((f) => SUPPORTED_EXTS.some((ext) => f.endsWith(ext)))
+    .sort();
   const results = [];
   for (const file of files) {
     const filePath = path.join(dir, file);
     const code = fs.readFileSync(filePath, 'utf-8');
-    process.stdout.write(`  ${file.padEnd(35)} ... `);
+    const language = languageFor(file);
+    process.stdout.write(`  ${file.padEnd(35)} [${language.padEnd(6)}] ... `);
     const t0 = Date.now();
     try {
-      const r = await analyze(code, file);
+      const r = await analyze(code, file, language);
       const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
       const threatCount = r.details?.threats?.length || 0;
       const threatTypes = (r.details?.threats || []).map((t) => t.type);
@@ -81,6 +103,7 @@ async function runDir(label, dir) {
       results.push({
         file,
         label,
+        language,
         riskLevel: r.riskLevel,
         category: r.category,
         threatCount,
@@ -91,7 +114,7 @@ async function runDir(label, dir) {
       console.log(`${r.riskLevel.padEnd(8)} (${threatCount} threats, ${elapsed}s${prefiltered ? ', pre-filtered' : ''})`);
     } catch (err) {
       console.log(`ERROR: ${err.message}`);
-      results.push({ file, label, error: err.message });
+      results.push({ file, label, language, error: err.message });
     }
   }
   return results;

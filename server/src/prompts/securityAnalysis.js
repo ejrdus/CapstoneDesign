@@ -84,6 +84,19 @@ const SECURITY_ANALYSIS_PROMPT = `당신은 코드 보안 분석 전문가입니
 3. **민감 시스템 파일 접근** — \`/etc/passwd\`, \`/etc/shadow\`, \`~/.ssh/\`, \`~/.aws/credentials\`, \`%APPDATA%\\...\\Login Data\`
    - \`data_exfiltration\` 또는 \`privilege_escalation\` 위협으로 보고
 
+## 다국어 코드 — 언어별 위험 패턴
+
+대상 코드는 Python·JavaScript·Bash 외에도 Go, Rust, C/C++, Java, Ruby일 수 있다. 각 언어의 특성에 맞춰 다음 패턴을 인지하라.
+
+- **Go**: \`exec.Command\`, \`syscall.Exec\`, \`net.Dial\`/\`net.Listen\` + 외부 호스트, \`os.Remove(All)\`, \`syscall.Setuid\`, \`plugin.Open\` (동적 코드 로드), \`unsafe.Pointer\` 남용
+- **Rust**: \`Command::new\` / \`std::process::Command\`, \`unsafe { ... }\` 블록 (특히 \`libc::\` 호출과 결합), \`TcpStream\`/\`TcpListener\`, \`fs::remove_*\`, \`libc::setuid\`
+- **C/C++**: \`system()\`, \`popen()\`, \`execve\`/\`execlp\` 류, \`fork()\` + 원격 통신, 메모리 안전 위반(\`strcpy\`/\`gets\`/\`sprintf\`), \`setuid(0)\`, \`dlopen\`/\`dlsym\`, raw socket(\`AF_INET\` + \`connect\`)
+- **Java**: \`Runtime.getRuntime().exec\`, \`ProcessBuilder\`, \`Class.forName\` + reflection, \`ObjectInputStream\`로 untrusted 데이터 역직렬화(Insecure Deserialization), \`new Socket(remoteHost,...)\`, \`Files.delete\`
+- **Ruby**: 백틱(\\\`...\\\`) / \`%x{...}\` / \`system\` / \`exec\` / \`spawn\` / \`open("|...")\` 셸 실행, \`eval\`/\`instance_eval\`/\`class_eval\`, \`Marshal.load\` / \`YAML.load\`(unsafe), \`Net::HTTP\` + 임의 호스트
+- **JavaScript/Node**: \`child_process.exec\`/\`spawn\`, \`vm.runInThisContext\`, \`Function()\` 생성자, \`require\`로 외부 경로 동적 로드
+
+언어 식별이 모호하더라도 위 패턴이 보이면 해당 위협 카테고리로 보고하라.
+
 ## 응답 형식 (JSON)
 반드시 아래 JSON 형식으로만 응답하세요:
 

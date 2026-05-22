@@ -4,7 +4,7 @@ const { validateAnalyzeRequest } = require('../utils/validator');
 const { preprocessCode } = require('../utils/codePreprocessor');
 const { anonymize, logRedactions } = require('../utils/anonymizer');
 const { prefilter } = require('../utils/prefilter');
-const { analyzeWithLLM } = require('../services/llmService');
+const { analyzeWithLLM, analyzeBatchWithLLM } = require('../services/llmService');
 const { classifyRisk } = require('../services/riskClassifier');
 const { recordAnalysis, getSessionHistory } = require('../services/sessionTracker');
 const { detectAttackChain } = require('../services/multiStageDetector');
@@ -32,7 +32,8 @@ router.post('/', async (req, res, next) => {
     logRedactions(replacements);
 
     // 2-2. 사전필터 — 위험 패턴이 전혀 없는 짧은 코드는 LLM 호출 스킵
-    const pf = prefilter(anonymizedCode);
+    //      언어 미지정/미지원 시 사전필터를 통과시키지 않고 LLM으로 보냄
+    const pf = prefilter(anonymizedCode, language);
 
     let result;
     if (pf.skip) {
@@ -126,6 +127,115 @@ router.post('/', async (req, res, next) => {
 
     // 7. 응답
     res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /api/analyze/batch
+ * 여러 코드 블록을 한 번에 분석 (메시지 단위 일괄 분석).
+ * 각 블록별로 전처리 → 비식별화 → 사전필터를 적용한 뒤, 사전필터를 통과하지
+ * 못한 블록만 묶어 LLM에 한 번만 호출한다.
+ *
+ * body:  { blocks: [{ id, code, language }, ...], aiService? }
+ * resp:  { results: [{ id, riskLevel, category, reason, details }, ...] }
+ */
+router.post('/batch', async (req, res, next) => {
+  try {
+    const { blocks, aiService } = req.body || {};
+    if (!Array.isArray(blocks) || blocks.length === 0) {
+      return res.status(400).json({ error: 'blocks 배열이 필요합니다.' });
+    }
+    if (blocks.length > 20) {
+      return res.status(400).json({ error: '한 번에 최대 20개 블록까지 분석 가능합니다.' });
+    }
+
+    // 블록별 전처리 + 비식별화 + 사전필터
+    const prepared = blocks.map((b) => {
+      const id = String(b.id);
+      const language = b.language;
+      const cleanCode = preprocessCode(b.code || '');
+      const { anonymized, replacements } = anonymize(cleanCode);
+      logRedactions(replacements);
+      const pf = prefilter(anonymized, language);
+      return { id, language, anonymized, prefilter: pf };
+    });
+
+    // 사전필터로 통과 가능한 블록은 LLM 호출 없이 즉시 결과 생성
+    const llmTargets = prepared.filter((p) => !p.prefilter.skip);
+
+    let llmResults = [];
+    if (llmTargets.length > 0) {
+      llmResults = await analyzeBatchWithLLM(
+        llmTargets.map((p) => ({ id: p.id, code: p.anonymized, language: p.language }))
+      );
+    }
+    const llmById = new Map(llmResults.map((r) => [String(r.blockId), r]));
+
+    // 최종 결과 조립
+    const results = prepared.map((p) => {
+      if (p.prefilter.skip) {
+        return {
+          id: p.id,
+          riskLevel: 'safe',
+          category: '정상',
+          reason: '위험 패턴이 감지되지 않았습니다 (사전필터).',
+          details: {
+            intent: '단순 코드 — 위험 호출/네트워크/암호화/난독화 패턴 없음',
+            confidence: 0.85,
+            threats: [],
+            prefiltered: true,
+            prefilterReason: p.prefilter.reason,
+          },
+          analyzedAt: new Date().toISOString(),
+        };
+      }
+      const llmResult = llmById.get(p.id);
+      if (!llmResult) {
+        // LLM이 블록을 누락한 경우 안전한 fallback
+        return {
+          id: p.id,
+          riskLevel: 'unknown',
+          category: '분석 누락',
+          reason: 'LLM이 이 블록을 반환하지 않았습니다.',
+          details: { intent: '', confidence: 0, threats: [], prefiltered: false, prefilterReason: p.prefilter.reason },
+          analyzedAt: new Date().toISOString(),
+        };
+      }
+      const riskResult = classifyRisk(llmResult);
+      const result = {
+        id: p.id,
+        riskLevel: riskResult.riskLevel,
+        category: riskResult.category,
+        reason: riskResult.reason,
+        details: { ...riskResult.details, prefiltered: false, prefilterReason: p.prefilter.reason },
+        analyzedAt: new Date().toISOString(),
+      };
+
+      // DB 로그 (블록 단위)
+      try {
+        db.prepare(`
+          INSERT INTO analysis_logs (code, language, ai_service, risk_level, category, reason, details, ip_address)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          p.anonymized,
+          p.language || 'unknown',
+          aiService || 'Unknown',
+          result.riskLevel,
+          result.category,
+          result.reason,
+          JSON.stringify(result.details),
+          req.ip
+        );
+      } catch (dbErr) {
+        console.error('[DB] 배치 로그 저장 실패:', dbErr.message);
+      }
+      return result;
+    });
+
+    console.log(`[Batch] blocks=${blocks.length} prefiltered=${prepared.length - llmTargets.length} llm=${llmTargets.length}`);
+    res.json({ results });
   } catch (error) {
     next(error);
   }
