@@ -284,10 +284,10 @@ export function applyAnalysisResult(blockId, result) {
       }
       break;
     case 'caution':
-      handleCaution(blurTarget, blockId, category, reason, threats, details);
+      handleCaution(blurTarget, blockId, category, reason, threats, details, result.redactionCount || 0);
       break;
     case 'danger':
-      handleDanger(blurTarget, blockId, category, reason, threats, details);
+      handleDanger(blurTarget, blockId, category, reason, threats, details, result.redactionCount || 0);
       break;
     default:
       // unknown / error → 블러 해제하되 경고
@@ -326,7 +326,7 @@ function handleSafe(blurTarget, blockId, category, reason) {
 
 // ─── caution: 블러 해제 + 경고 배너 유지 ─────────────────────
 
-function handleCaution(blurTarget, blockId, category, reason, threats, details) {
+function handleCaution(blurTarget, blockId, category, reason, threats, details, redactionCount) {
   removeBlur(blurTarget);
 
   const intent = (details && details.intent) || '';
@@ -364,11 +364,12 @@ function handleCaution(blurTarget, blockId, category, reason, threats, details) 
   });
 
   setupEvidenceToggle(banner);
+  addDeanonymizeToggle(banner, blockId, { riskLevel: 'caution', category, reason, details, redactionCount });
 }
 
 // ─── danger: 블러 유지 + 차단 오버레이 + 확인 버튼 ───────────
 
-function handleDanger(blurTarget, blockId, category, reason, threats, details) {
+function handleDanger(blurTarget, blockId, category, reason, threats, details, redactionCount) {
   // 블러 유지! pending → danger 로 전환
   blurTarget.setAttribute('data-asm-blur', 'danger');
   blurTarget.classList.remove('asm-blur-pending');
@@ -448,6 +449,7 @@ function handleDanger(blurTarget, blockId, category, reason, threats, details) {
   });
 
   setupEvidenceToggle(overlay);
+  addDeanonymizeToggle(overlay, blockId, { riskLevel: 'danger', category, reason, details, redactionCount });
 }
 
 /**
@@ -533,6 +535,95 @@ function buildEvidenceHtml(threats) {
       </div>
     </div>
   `;
+}
+
+/**
+ * "원본 보기 / 마스킹 보기" 토글 추가 — 매핑이 클라이언트에 저장돼 있을 때만.
+ * 토글 클릭 시 service-worker에 DEANONYMIZE_RESULT 요청, 응답으로 받은 복원된
+ * 텍스트로 reason/intent/evidence 영역을 업데이트.
+ */
+function addDeanonymizeToggle(container, blockId, originalResult) {
+  const count = originalResult && originalResult.redactionCount;
+  if (!count || count <= 0) return;
+
+  const titleRow = container.querySelector('.asm-banner-title-row');
+  if (!titleRow) return;
+
+  const btn = document.createElement('button');
+  btn.className = 'asm-deanon-toggle';
+  btn.setAttribute('data-asm-state', 'masked');
+  btn.textContent = `🔓 원본 보기 (${count}건)`;
+  titleRow.appendChild(btn);
+
+  let restoredResult = null;
+
+  btn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const state = btn.getAttribute('data-asm-state');
+
+    if (state === 'masked') {
+      if (!restoredResult) {
+        try {
+          const resp = await chrome.runtime.sendMessage({
+            type: 'DEANONYMIZE_RESULT',
+            payload: { blockId, result: originalResult },
+          });
+          if (!resp || !resp.restored) {
+            btn.textContent = '⚠️ 매핑 만료';
+            btn.disabled = true;
+            return;
+          }
+          restoredResult = resp.result;
+        } catch (err) {
+          console.warn('[AI Script Monitor] de-anonymize 실패', err);
+          return;
+        }
+      }
+      renderBannerDetail(container, restoredResult);
+      btn.textContent = '🔒 마스킹 보기';
+      btn.setAttribute('data-asm-state', 'restored');
+    } else {
+      renderBannerDetail(container, originalResult);
+      btn.textContent = `🔓 원본 보기 (${count}건)`;
+      btn.setAttribute('data-asm-state', 'masked');
+    }
+  });
+}
+
+/**
+ * 배너 내부의 텍스트 영역(reason/intent/evidence)을 결과 객체로 다시 채운다.
+ * 토글 클릭 시 호출.
+ */
+function renderBannerDetail(container, result) {
+  if (!result) return;
+
+  const reasonEl = container.querySelector('.asm-banner-reason');
+  if (reasonEl && result.reason) {
+    reasonEl.textContent = result.reason;
+  }
+
+  // intent — caution은 .asm-banner-intent (p), danger는 .asm-intent-text (span)
+  const intentText = result.details && result.details.intent;
+  if (intentText) {
+    const cautionIntent = container.querySelector('.asm-banner-intent');
+    const dangerIntent = container.querySelector('.asm-intent-text');
+    if (cautionIntent) cautionIntent.textContent = intentText;
+    if (dangerIntent) dangerIntent.textContent = intentText;
+  }
+
+  // evidence — section을 통째로 교체하고 토글 이벤트 재바인딩
+  const oldSection = container.querySelector('.asm-evidence-section');
+  if (oldSection) {
+    const threats = (result.details && result.details.threats) || [];
+    const newHtml = buildEvidenceHtml(threats);
+    const temp = document.createElement('div');
+    setSafeHTML(temp, newHtml);
+    const newSection = temp.querySelector('.asm-evidence-section');
+    if (newSection) {
+      oldSection.replaceWith(newSection);
+      setupEvidenceToggle(container);
+    }
+  }
 }
 
 /**

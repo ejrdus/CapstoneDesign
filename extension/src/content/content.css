@@ -386,3 +386,31 @@
   transform: translateY(-4px);
   pointer-events: none;
 }
+
+/* ─── 원본 보기 / 마스킹 보기 토글 (de-anonymization) ─────────── */
+
+.asm-deanon-toggle {
+  margin-left: 8px;
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 1.4;
+  background: rgba(255, 255, 255, 0.65);
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 10px;
+  cursor: pointer;
+  color: inherit;
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+
+.asm-deanon-toggle:hover {
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.asm-deanon-toggle:active {
+  transform: scale(0.97);
+}
+
+.asm-deanon-toggle:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
