@@ -4,3 +4,17 @@ dist/
 .DS_Store
 *.log
 server/tests/results/
+server/tests/samples/
+
+# Python 가상환경
+.venv/
+venv/
+__pycache__/
+
+# 런타임 DB
+server/data/*.db
+server/data/*.db-wal
+server/data/*.db-shm
+
+# 에디터/OS
+.vscode/

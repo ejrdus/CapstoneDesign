@@ -75,7 +75,7 @@ function renderLogin() {
       <div class="login-page">
         <div class="login-card">
           <div class="login-logo">
-            <span class="shield">🛡️</span>
+            <span class="shield">&lt;/&gt;</span>
             <h1>AI Script Monitor</h1>
             <p>관리자 콘솔</p>
           </div>
@@ -174,7 +174,7 @@ function renderDashboard() {
     <div class="layout">
       <aside class="sidebar">
         <div class="sidebar-logo">
-          <span class="shield">🛡️</span>
+          <span class="shield">&lt;/&gt;</span>
           <div>
             <h2>ASM Admin</h2>
             <span>AI Script Monitor</span>
@@ -182,18 +182,18 @@ function renderDashboard() {
         </div>
         <nav class="nav-menu">
           <button class="nav-item ${state.currentPage === 'dashboard' ? 'active' : ''}" data-page="dashboard">
-            <span class="nav-icon">📊</span> 대시보드
+            <span class="nav-icon">#</span> 대시보드
           </button>
           <button class="nav-item ${state.currentPage === 'logs' ? 'active' : ''}" data-page="logs">
-            <span class="nav-icon">📋</span> 분석 로그
+            <span class="nav-icon">&equiv;</span> 분석 로그
           </button>
           ${state.admin?.role === 'superadmin' ? `
             <button class="nav-item ${state.currentPage === 'requests' ? 'active' : ''}" data-page="requests">
-              <span class="nav-icon">📬</span> 가입 요청
+              <span class="nav-icon">+</span> 가입 요청
               <span class="nav-badge" id="requestBadge" style="display:none">0</span>
             </button>
             <button class="nav-item ${state.currentPage === 'admins' ? 'active' : ''}" data-page="admins">
-              <span class="nav-icon">👥</span> 관리자 관리
+              <span class="nav-icon">&bull;</span> 관리자 관리
             </button>
           ` : ''}
         </nav>
@@ -239,7 +239,7 @@ async function loadPageContent() {
       case 'admins': await renderAdminsPage(main); break;
     }
   } catch (err) {
-    main.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><h3>오류 발생</h3><p>${err.message}</p></div>`;
+    main.innerHTML = `<div class="empty-state"><h3>오류 발생</h3><p>${err.message}</p></div>`;
   }
 
   // 가입 요청 뱃지 업데이트
@@ -263,8 +263,72 @@ async function renderStatsPage(container) {
   state.stats = stats;
 
   const { overview, byService, byLanguage, daily, topCategories } = stats;
-  const maxService = Math.max(...byService.map(s => s.count), 1);
-  const maxLang = Math.max(...byLanguage.map(l => l.count), 1);
+
+  // 항상 3개 AI 서비스를 표시 (데이터 없으면 0)
+  const ALL_SERVICES = ['ChatGPT', 'Claude', 'Gemini'];
+  const serviceMap = {};
+  byService.forEach(s => { serviceMap[s.ai_service] = s; });
+  const fullServices = ALL_SERVICES.map(name => serviceMap[name] || {
+    ai_service: name, count: 0, danger_count: 0, caution_count: 0, safe_count: 0
+  });
+
+  // 항상 16개 언어를 표시 (데이터 없으면 0), 건수 내림차순
+  const ALL_LANGUAGES = [
+    'python', 'javascript', 'typescript', 'java', 'c', 'cpp', 'go',
+    'ruby', 'php', 'rust', 'csharp', 'bash', 'powershell', 'sql', 'html', 'css'
+  ];
+  const langMap = {};
+  byLanguage.forEach(l => { langMap[(l.language || '').toLowerCase()] = l; });
+  const fullLanguages = ALL_LANGUAGES.map(name => langMap[name] || {
+    language: name, count: 0, danger_count: 0, caution_count: 0, safe_count: 0
+  });
+  // 데이터 있는 것 먼저, 그 다음 0건은 알파벳순
+  fullLanguages.sort((a, b) => (b.count - a.count) || a.language.localeCompare(b.language));
+
+  const maxService = Math.max(...fullServices.map(s => s.count), 1);
+  const maxLang    = Math.max(...fullLanguages.map(l => l.count), 1);
+  const maxCat     = Math.max(...topCategories.map(x => x.count), 1);
+
+  // 최근 30일 날짜 뼈대 생성 (데이터 없는 날은 0으로 채움)
+  const dailyMap = {};
+  daily.forEach(d => { dailyMap[d.date] = d; });
+  const timelineDays = [];
+  for (let i = 29; i >= 0; i--) {
+    const dt = new Date();
+    dt.setDate(dt.getDate() - i);
+    const key = dt.toISOString().slice(0, 10);
+    timelineDays.push(dailyMap[key] || { date: key, count: 0, danger_count: 0, caution_count: 0 });
+  }
+  const maxTimeline = Math.max(...timelineDays.map(d => d.count), 1);
+
+  // 범례 HTML
+  const legend = `
+    <div class="chart-legend">
+      <span class="legend-dot danger"></span><span>위험</span>
+      <span class="legend-dot caution"></span><span>주의</span>
+      <span class="legend-dot safe"></span><span>안전</span>
+    </div>`;
+
+  // 수평 스택 바 생성 헬퍼
+  function stackedBar(danger, caution, safe, max) {
+    const total = danger + caution + safe;
+    const dPct = (danger / max * 100).toFixed(1);
+    const cPct = (caution / max * 100).toFixed(1);
+    const sPct = (safe   / max * 100).toFixed(1);
+    // 바 안에 숫자를 표시할 최소 퍼센트 (너무 좁으면 밖에 표시)
+    const minPctForLabel = 8;
+    function segHtml(count, pct, cls) {
+      if (count <= 0) return '';
+      const showInside = parseFloat(pct) >= minPctForLabel;
+      return `<div class="bar-fill ${cls}" style="width:${pct}%">${showInside ? `<span class="bar-seg-label">${count}</span>` : ''}</div>`;
+    }
+    return `
+      <div class="bar-track" title="위험 ${danger} / 주의 ${caution} / 안전 ${safe}">
+        ${segHtml(danger, dPct, 'danger')}
+        ${segHtml(caution, cPct, 'caution')}
+        ${segHtml(safe, sPct, 'safe')}
+      </div>`;
+  }
 
   container.innerHTML = `
     <div class="page-header">
@@ -272,101 +336,122 @@ async function renderStatsPage(container) {
       <p>AI Script Monitor 전체 분석 현황을 한눈에 확인합니다.</p>
     </div>
 
+    <!-- ── 요약 카드 ── -->
     <div class="stats-grid">
       <div class="stat-card">
-        <span class="stat-icon">📊</span>
         <div class="stat-label">전체 분석</div>
         <div class="stat-value">${overview.total.toLocaleString()}</div>
       </div>
       <div class="stat-card danger">
-        <span class="stat-icon">🔴</span>
         <div class="stat-label">위험</div>
         <div class="stat-value">${overview.danger.toLocaleString()}</div>
+        <div class="stat-sub">${overview.total ? (overview.danger / overview.total * 100).toFixed(1) : 0}%</div>
       </div>
       <div class="stat-card caution">
-        <span class="stat-icon">🟡</span>
         <div class="stat-label">주의</div>
         <div class="stat-value">${overview.caution.toLocaleString()}</div>
+        <div class="stat-sub">${overview.total ? (overview.caution / overview.total * 100).toFixed(1) : 0}%</div>
       </div>
       <div class="stat-card safe">
-        <span class="stat-icon">🟢</span>
         <div class="stat-label">안전</div>
         <div class="stat-value">${overview.safe.toLocaleString()}</div>
+        <div class="stat-sub">${overview.total ? (overview.safe / overview.total * 100).toFixed(1) : 0}%</div>
       </div>
     </div>
 
+    <!-- ── 2열: 좌(30일추이+서비스+위협) / 우(언어별) ── -->
     <div class="charts-grid">
-      <div class="chart-card">
-        <h3>AI 서비스별 분석</h3>
-        <div class="bar-chart">
-          ${byService.length === 0 ? '<p style="color:var(--text-muted);font-size:13px;">데이터 없음</p>' :
-            byService.map(s => `
-              <div class="bar-item">
-                <span class="bar-label">${s.ai_service || 'Unknown'}</span>
-                <div class="bar-track">
-                  <div class="bar-fill accent" style="width:${(s.count / maxService * 100)}%"></div>
-                </div>
-                <span class="bar-value">${s.count}</span>
-              </div>
-            `).join('')
-          }
+
+      <!-- 좌측: 30일 추이 + 서비스별 + 위협 카테고리 -->
+      <div style="display:flex;flex-direction:column;gap:14px;">
+
+        <!-- 최근 30일 분석 추이 -->
+        <div class="chart-card">
+          <div class="chart-card-header">
+            <h3>최근 30일 분석 추이</h3>
+            ${legend}
+          </div>
+          <div class="timeline-chart">
+            ${timelineDays.map((d, idx) => {
+              const safe = d.count - (d.danger_count || 0) - (d.caution_count || 0);
+              const dPct = (( d.danger_count  || 0) / maxTimeline * 100).toFixed(1);
+              const cPct = (( d.caution_count || 0) / maxTimeline * 100).toFixed(1);
+              const sPct = (Math.max(safe, 0)        / maxTimeline * 100).toFixed(1);
+              const label = d.date.slice(5);
+              const showLabel = idx === 0
+                || idx === timelineDays.length - 1
+                || idx % 5 === 0;
+              return `
+                <div class="timeline-col" title="${d.date}&#10;전체: ${d.count}&#10;위험: ${d.danger_count || 0}&#10;주의: ${d.caution_count || 0}&#10;안전: ${Math.max(safe,0)}">
+                  <div class="timeline-bar-wrap">
+                    <div class="timeline-seg safe"    style="height:${sPct}%"></div>
+                    <div class="timeline-seg caution" style="height:${cPct}%"></div>
+                    <div class="timeline-seg danger"  style="height:${dPct}%"></div>
+                  </div>
+                  <div class="timeline-label">${showLabel ? label : ''}</div>
+                </div>`;
+            }).join('')}
+          </div>
         </div>
-      </div>
-      <div class="chart-card">
-        <h3>언어별 분석</h3>
-        <div class="bar-chart">
-          ${byLanguage.length === 0 ? '<p style="color:var(--text-muted);font-size:13px;">데이터 없음</p>' :
-            byLanguage.map(l => `
-              <div class="bar-item">
-                <span class="bar-label">${l.language || 'unknown'}</span>
-                <div class="bar-track">
-                  <div class="bar-fill accent" style="width:${(l.count / maxLang * 100)}%"></div>
-                </div>
-                <span class="bar-value">${l.count}</span>
-              </div>
-            `).join('')
-          }
-        </div>
-      </div>
-      <div class="chart-card">
-        <h3>주요 위협 카테고리</h3>
-        <div class="bar-chart">
-          ${topCategories.length === 0 ? '<p style="color:var(--text-muted);font-size:13px;">감지된 위협 없음</p>' :
-            topCategories.map(c => {
-              const maxCat = Math.max(...topCategories.map(x => x.count), 1);
+
+        <!-- AI 서비스별 -->
+        <div class="chart-card">
+          <div class="chart-card-header">
+            <h3>AI 서비스별 분석</h3>
+            ${legend}
+          </div>
+          <div class="bar-chart" style="margin-top:4px;">
+            ${fullServices.map(s => {
+              const safe = s.count - (s.danger_count || 0) - (s.caution_count || 0);
               return `
                 <div class="bar-item">
-                  <span class="bar-label" style="width:120px">${c.category}</span>
+                  <span class="bar-label">${s.ai_service}</span>
+                  ${stackedBar(s.danger_count || 0, s.caution_count || 0, Math.max(safe, 0), maxService)}
+                  <span class="bar-value">${s.count}</span>
+                </div>`;
+            }).join('')}
+          </div>
+        </div>
+
+        <!-- 위협 카테고리 TOP 5 -->
+        <div class="chart-card">
+          <h3>주요 위협 카테고리 TOP 5</h3>
+          <div class="bar-chart" style="margin-top:16px;">
+            ${topCategories.length === 0 ? '<p style="color:var(--text-muted);font-size:13px;">감지된 위협 없음</p>' :
+              topCategories.map(c => `
+                <div class="bar-item">
+                  <span class="bar-label" style="width:120px;font-size:11px;">${c.category}</span>
                   <div class="bar-track">
-                    <div class="bar-fill danger" style="width:${(c.count / maxCat * 100)}%"></div>
+                    <div class="bar-fill danger" style="width:${(c.count / maxCat * 100).toFixed(1)}%"></div>
                   </div>
                   <span class="bar-value">${c.count}</span>
                 </div>
-              `;
-            }).join('')
-          }
+              `).join('')
+            }
+          </div>
         </div>
+
       </div>
+
+      <!-- 우측: 언어별 분석 -->
       <div class="chart-card">
-        <h3>최근 7일 분석 추이</h3>
-        <div class="bar-chart">
-          ${daily.length === 0 ? '<p style="color:var(--text-muted);font-size:13px;">데이터 없음</p>' :
-            (() => {
-              const maxDaily = Math.max(...daily.map(d => d.count), 1);
-              return daily.map(d => `
-                <div class="bar-item">
-                  <span class="bar-label">${d.date.slice(5)}</span>
-                  <div class="bar-track">
-                    <div class="bar-fill safe" style="width:${(d.count / maxDaily * 100)}%"></div>
-                    ${d.danger_count > 0 ? `<div class="bar-fill danger" style="width:${(d.danger_count / maxDaily * 100)}%;position:absolute;top:0;left:0;opacity:0.7"></div>` : ''}
-                  </div>
-                  <span class="bar-value">${d.count}</span>
-                </div>
-              `).join('');
-            })()
-          }
+        <div class="chart-card-header">
+          <h3>언어별 분석</h3>
+          ${legend}
+        </div>
+        <div class="bar-chart" style="margin-top:4px;">
+          ${fullLanguages.map(l => {
+            const safe = l.count - (l.danger_count || 0) - (l.caution_count || 0);
+            return `
+              <div class="bar-item">
+                <span class="bar-label">${l.language}</span>
+                ${stackedBar(l.danger_count || 0, l.caution_count || 0, Math.max(safe, 0), maxLang)}
+                <span class="bar-value">${l.count}</span>
+              </div>`;
+          }).join('')}
         </div>
       </div>
+
     </div>
   `;
 }
@@ -420,7 +505,6 @@ async function renderLogsPage(container) {
 
       ${data.logs.length === 0 ? `
         <div class="empty-state">
-          <div class="empty-icon">📭</div>
           <h3>분석 로그가 없습니다</h3>
           <p>코드 분석이 수행되면 여기에 표시됩니다.</p>
         </div>
@@ -539,11 +623,11 @@ async function showLogDetail(id) {
             <span class="detail-label">위협 상세</span>
             <div class="detail-value">
               ${details.threats.map(t => `
-                <div style="margin-bottom:8px;padding:8px;background:var(--bg);border-radius:6px;border:1px solid var(--border)">
+                <div style="margin-bottom:8px;padding:8px;background:var(--bg-input);border-radius:6px;border:1px solid var(--border)">
                   <strong style="color:var(--danger)">${t.category || t.type}</strong>
                   ${t.severity ? ` <span style="font-size:11px;color:var(--text-muted)">(심각도: ${t.severity})</span>` : ''}
                   <p style="margin:4px 0;font-size:12px;color:var(--text-secondary)">${t.description || ''}</p>
-                  ${t.evidence ? `<code style="display:block;background:rgba(0,0,0,0.3);padding:6px 8px;border-radius:4px;font-size:11px;margin-top:4px;color:var(--caution)">${escapeHtml(t.evidence)}</code>` : ''}
+                  ${t.evidence ? `<code style="display:block;background:var(--bg-input);padding:6px 8px;border-radius:4px;font-size:11px;margin-top:4px;color:var(--text-secondary)">${escapeHtml(t.evidence)}</code>` : ''}
                 </div>
               `).join('')}
             </div>
@@ -582,7 +666,6 @@ async function renderRequestsPage(container) {
       </div>
       ${pending.length === 0 ? `
         <div class="empty-state" style="padding:40px">
-          <div class="empty-icon">✅</div>
           <h3>대기 중인 요청이 없습니다</h3>
         </div>
       ` : `

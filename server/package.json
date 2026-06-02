@@ -9,8 +9,10 @@
     "test": "jest",
     "test:prefilter": "node tests/test-prefilter.js",
     "test:anonymizer": "node tests/test-anonymizer.js",
-    "test:unit": "npm run test:prefilter && npm run test:anonymizer",
-    "evaluate": "node tests/evaluate.js"
+    "test:riskclassifier": "node tests/test-riskClassifier.js",
+    "test:unit": "npm run test:prefilter && npm run test:anonymizer && npm run test:riskclassifier",
+    "evaluate": "node tests/evaluate.js",
+    "calibrate": "node tests/calibrate.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.40.1",

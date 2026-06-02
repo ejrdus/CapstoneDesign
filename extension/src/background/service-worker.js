@@ -9,8 +9,29 @@
  */
 
 import { anonymize, deanonymizeResult, normalizeCode } from '../utils/anonymizer.js';
+import { getServerUrl } from '../utils/api.js';
 
-const SERVER_URL = 'http://localhost:3000';
+const DEFAULT_SERVER_URL = 'http://localhost:3000';
+const REQUEST_TIMEOUT_MS = 15000; // 서버가 멈춰도 무한 대기하지 않도록 분석 요청 타임아웃
+
+// 분석 요청에 사용할 서버 설정(URL + 선택적 API 키)을 chrome.storage에서 읽는다.
+// 하드코딩 대신 설정 가능하게 하여 스테이징/프로덕션 배포를 지원.
+async function getRequestConfig() {
+  let serverUrl = DEFAULT_SERVER_URL;
+  try {
+    serverUrl = await getServerUrl();
+  } catch (e) {
+    serverUrl = DEFAULT_SERVER_URL;
+  }
+  let apiKey = null;
+  try {
+    const data = await chrome.storage.local.get('apiKey');
+    apiKey = data.apiKey || null;
+  } catch (e) {
+    apiKey = null;
+  }
+  return { serverUrl: serverUrl || DEFAULT_SERVER_URL, apiKey };
+}
 
 // ─── 분석 결과 캐시 ─────────────────────────────────────────
 
@@ -122,7 +143,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
  *   3) 캐시 미스면 서버에 비식별화된 코드 전송 (서버측 anonymizer가 backstop)
  *   4) 응답 캐시 + blockId/aiService 부가
  */
-async function handleAnalyzeCode({ code, language, blockId, aiService }) {
+async function handleAnalyzeCode({ code, language, blockId, aiService, sessionId }) {
   // 1. 클라이언트 비식별화 + 정규화 + 매핑 저장
   //    정규화는 캐시 적중률 향상용 — 서버측 preprocessCode와 동일 규칙
   const { anonymized, mapping } = anonymize(code);
@@ -136,28 +157,63 @@ async function handleAnalyzeCode({ code, language, blockId, aiService }) {
     return { ...cached, blockId, aiService, fromCache: true, redactionCount: mapping.length };
   }
 
-  // 3. 서버 요청 — 비식별화된 코드만 전송
+  // 3. 서버 요청 — 비식별화된 코드만 전송 (타임아웃 + 에러 타입 구분)
+  const { serverUrl, apiKey } = await getRequestConfig();
+  const headers = { 'Content-Type': 'application/json' };
+  if (apiKey) headers['x-api-key'] = apiKey;
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
-    const response = await fetch(`${SERVER_URL}/api/analyze`, {
+    const response = await fetch(`${serverUrl}/api/analyze`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code: normalized, language, aiService }),
+      headers,
+      body: JSON.stringify({ code: normalized, language, aiService, sessionId }),
+      signal: controller.signal,
     });
 
     if (!response.ok) {
-      throw new Error(`서버 응답 오류: ${response.status}`);
+      const err = new Error(`서버 응답 오류: ${response.status}`);
+      err.errorType = response.status >= 500 ? 'server_error' : 'bad_request';
+      throw err;
     }
 
-    const result = await response.json();
+    let result;
+    try {
+      result = await response.json();
+    } catch (e) {
+      const err = new Error('서버 응답 JSON 파싱 실패');
+      err.errorType = 'invalid_response';
+      throw err;
+    }
+
+    // 서버 응답이 기대한 형태인지 최소 검증
+    if (!result || typeof result.riskLevel !== 'string') {
+      const err = new Error('서버 응답 형식 오류 (riskLevel 누락)');
+      err.errorType = 'invalid_response';
+      throw err;
+    }
+
     setCachedResult(normalized, result);
     return { ...result, blockId, aiService, redactionCount: mapping.length };
   } catch (error) {
-    console.error('[AI Script Monitor] 서버 통신 오류:', error);
+    const errorType = error.name === 'AbortError' ? 'timeout' : (error.errorType || 'network');
+    const reasonMap = {
+      timeout: '서버 응답 시간 초과',
+      server_error: '서버 내부 오류',
+      bad_request: '잘못된 분석 요청',
+      invalid_response: '서버 응답 형식 오류',
+      network: '서버 연결 실패',
+    };
+    console.error(`[AI Script Monitor] 서버 통신 오류 (${errorType}):`, error.message);
     return {
       riskLevel: 'unknown',
       category: 'error',
-      reason: '서버 연결 실패',
+      errorType,
+      reason: reasonMap[errorType] || '서버 연결 실패',
       blockId,
     };
+  } finally {
+    clearTimeout(timeoutId);
   }
 }

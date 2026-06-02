@@ -35,6 +35,12 @@ const EXT_TO_LANG = {
   '.cc': 'cpp',
   '.java': 'java',
   '.rb': 'ruby',
+  '.js': 'javascript',
+  '.ts': 'typescript',
+  '.sh': 'bash',
+  '.ps1': 'powershell',
+  '.php': 'php',
+  '.cs': 'csharp',
 };
 const SUPPORTED_EXTS = Object.keys(EXT_TO_LANG);
 
@@ -100,6 +106,7 @@ async function runDir(label, dir) {
       const threatCount = r.details?.threats?.length || 0;
       const threatTypes = (r.details?.threats || []).map((t) => t.type);
       const prefiltered = r.details?.prefiltered === true;
+      const confidence = typeof r.details?.confidence === 'number' ? r.details.confidence : null;
       results.push({
         file,
         label,
@@ -108,6 +115,7 @@ async function runDir(label, dir) {
         category: r.category,
         threatCount,
         threatTypes,
+        confidence,
         elapsed: Number(elapsed),
         prefiltered,
       });

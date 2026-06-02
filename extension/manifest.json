@@ -9,8 +9,7 @@
     "https://chat.openai.com/*",
     "https://claude.ai/*",
     "https://gemini.google.com/*",
-    "http://localhost:3000/*",
-    "http://localhost/*"
+    "http://localhost:3000/*"
   ],
   "background": {
     "service_worker": "background/service-worker.js"

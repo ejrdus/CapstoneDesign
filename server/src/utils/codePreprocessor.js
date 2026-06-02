@@ -53,10 +53,12 @@ function preprocessCode(code) {
   // 정규화 — 동일 코드의 사소한 변형이 같은 캐시 키로 매핑되도록
   cleaned = normalizeCode(cleaned);
 
-  // 너무 긴 코드는 잘라내기 (토큰 제한 대비)
-  const MAX_LENGTH = 5000;
+  // 너무 긴 코드는 잘라내기 (토큰 제한 대비).
+  // 5000자는 너무 짧아 악성 페이로드가 꼬리에 숨으면 LLM이 못 보는 사각지대가 생긴다.
+  // 최신 모델의 큰 컨텍스트를 활용해 12000자로 상향(여전히 토큰 폭주는 방지).
+  const MAX_LENGTH = 12000;
   if (cleaned.length > MAX_LENGTH) {
-    cleaned = cleaned.substring(0, MAX_LENGTH) + '\n// ... (코드가 잘림)';
+    cleaned = cleaned.substring(0, MAX_LENGTH) + '\n// ... (코드가 잘림 — 이후 내용은 분석에서 제외됨)';
   }
 
   return cleaned;

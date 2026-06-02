@@ -167,50 +167,85 @@ router.get('/logs/:id', authMiddleware, (req, res) => {
  * 대시보드 통계 데이터
  */
 router.get('/stats', authMiddleware, (req, res) => {
-  const total = db.prepare('SELECT COUNT(*) as count FROM analysis_logs').get().count;
-  const danger = db.prepare("SELECT COUNT(*) as count FROM analysis_logs WHERE risk_level = 'danger'").get().count;
-  const caution = db.prepare("SELECT COUNT(*) as count FROM analysis_logs WHERE risk_level = 'caution'").get().count;
-  const safe = db.prepare("SELECT COUNT(*) as count FROM analysis_logs WHERE risk_level = 'safe'").get().count;
+  // 실제 서비스 데이터만 집계 (eval/batch 테스트 데이터 제외)
+  const serviceFilter = "ai_service IN ('ChatGPT', 'Claude', 'Gemini')";
+  const total = db.prepare(`SELECT COUNT(*) as count FROM analysis_logs WHERE ${serviceFilter}`).get().count;
+  const danger = db.prepare(`SELECT COUNT(*) as count FROM analysis_logs WHERE risk_level = 'danger' AND ${serviceFilter}`).get().count;
+  const caution = db.prepare(`SELECT COUNT(*) as count FROM analysis_logs WHERE risk_level = 'caution' AND ${serviceFilter}`).get().count;
+  const safe = db.prepare(`SELECT COUNT(*) as count FROM analysis_logs WHERE risk_level = 'safe' AND ${serviceFilter}`).get().count;
 
-  // AI 서비스별 통계
+  // AI 서비스별 통계 (실제 서비스만 — eval/batch 테스트 데이터 제외)
   const byService = db.prepare(`
     SELECT ai_service, COUNT(*) as count,
       SUM(CASE WHEN risk_level = 'danger' THEN 1 ELSE 0 END) as danger_count,
       SUM(CASE WHEN risk_level = 'caution' THEN 1 ELSE 0 END) as caution_count,
       SUM(CASE WHEN risk_level = 'safe' THEN 1 ELSE 0 END) as safe_count
     FROM analysis_logs
+    WHERE ai_service IN ('ChatGPT', 'Claude', 'Gemini')
     GROUP BY ai_service
   `).all();
 
   // 언어별 통계
   const byLanguage = db.prepare(`
     SELECT language, COUNT(*) as count,
-      SUM(CASE WHEN risk_level = 'danger' THEN 1 ELSE 0 END) as danger_count
+      SUM(CASE WHEN risk_level = 'danger' THEN 1 ELSE 0 END) as danger_count,
+      SUM(CASE WHEN risk_level = 'caution' THEN 1 ELSE 0 END) as caution_count,
+      SUM(CASE WHEN risk_level = 'safe' THEN 1 ELSE 0 END) as safe_count
     FROM analysis_logs
+    WHERE ai_service IN ('ChatGPT', 'Claude', 'Gemini')
     GROUP BY language
     ORDER BY count DESC
-    LIMIT 10
   `).all();
 
   // 최근 7일 일별 통계
   const daily = db.prepare(`
-    SELECT DATE(analyzed_at) as date, COUNT(*) as count,
-      SUM(CASE WHEN risk_level = 'danger' THEN 1 ELSE 0 END) as danger_count
-    FROM analysis_logs
-    WHERE analyzed_at >= datetime('now', '-7 days', 'localtime')
-    GROUP BY DATE(analyzed_at)
-    ORDER BY date
+  SELECT DATE(analyzed_at) as date, COUNT(*) as count,
+    SUM(CASE WHEN risk_level = 'danger'  THEN 1 ELSE 0 END) as danger_count,
+    SUM(CASE WHEN risk_level = 'caution' THEN 1 ELSE 0 END) as caution_count,
+    SUM(CASE WHEN risk_level = 'safe'    THEN 1 ELSE 0 END) as safe_count
+  FROM analysis_logs
+  WHERE analyzed_at >= datetime('now', '-30 days', 'localtime')
+    AND ai_service IN ('ChatGPT', 'Claude', 'Gemini')
+  GROUP BY DATE(analyzed_at)
+  ORDER BY date
+`).all();
+
+  // 위협 카테고리 TOP — details JSON에서 threat type을 추출하여 집계
+  const THREAT_TYPE_LABELS = {
+    file_destruction: '파일 파괴',
+    reverse_shell: '역방향 셸',
+    privilege_escalation: '권한 상승',
+    data_exfiltration: '데이터 유출',
+    ransomware: '랜섬웨어',
+    obfuscation: '난독화',
+    network_access: '네트워크 접근',
+    code_execution: '코드 실행',
+    analyzer_subversion: '분석기 우회',
+  };
+
+  const threatRows = db.prepare(`
+    SELECT details FROM analysis_logs
+    WHERE risk_level IN ('danger', 'caution') AND details IS NOT NULL
+      AND ai_service IN ('ChatGPT', 'Claude', 'Gemini')
   `).all();
 
-  // 최근 위협 카테고리 TOP 5
-  const topCategories = db.prepare(`
-    SELECT category, COUNT(*) as count
-    FROM analysis_logs
-    WHERE risk_level IN ('danger', 'caution') AND category IS NOT NULL AND category != ''
-    GROUP BY category
-    ORDER BY count DESC
-    LIMIT 5
-  `).all();
+  const typeCounts = {};
+  for (const row of threatRows) {
+    try {
+      const parsed = typeof row.details === 'string' ? JSON.parse(row.details) : row.details;
+      const threats = parsed.threats || [];
+      for (const t of threats) {
+        if (t.type && THREAT_TYPE_LABELS[t.type]) {
+          typeCounts[t.type] = (typeCounts[t.type] || 0) + 1;
+        }
+      }
+    } catch (e) { /* JSON 파싱 실패 무시 */ }
+  }
+
+  const topCategories = Object.entries(typeCounts)
+    .map(([type, count]) => ({ category: THREAT_TYPE_LABELS[type], count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 5);
 
   res.json({
     overview: { total, danger, caution, safe },

@@ -104,6 +104,9 @@ export function applyMessageBlur(msgEl, msgId) {
   enforceBlurStyle(msgEl, 'pending');
   msgEl.classList.add('asm-blur-pending');
 
+  // 분석 중에도 부모 컨테이너의 액션 버튼 숨김
+  blockParentContainer(msgEl);
+
   // 가드 옵저버 — React가 우리 inline style이나 data-asm-blur를 wipe하면 즉시 복구
   let guardObserver = null;
   if (typeof MutationObserver !== 'undefined') {
@@ -172,6 +175,9 @@ export function removeMessageBlur(msgEl, msgId) {
   msgEl.style.removeProperty('transition');
   msgEl.setAttribute('data-asm-msg-state', 'revealed');
 
+  // 안전 판정 → 부모 컨테이너의 액션 버튼 복원
+  unblockParentContainer(msgEl);
+
   // "분석 중" 배너 제거 (안전 배너는 코드 블록 레벨에서 표시)
   const banner = state && state.banner && state.banner.parentElement ? state.banner : null;
   if (banner) {
@@ -183,7 +189,7 @@ export function removeMessageBlur(msgEl, msgId) {
 }
 
 /**
- * 메시지 위험 표시 — 블러 유지 + 경고 배너
+ * 메시지 위험 표시 — 블러 유지 + 경고 배너 + 액션 버튼 차단
  */
 export function markMessageDanger(msgEl, msgId, summary) {
   msgEl.setAttribute('data-asm-blur', 'danger');
@@ -192,6 +198,9 @@ export function markMessageDanger(msgEl, msgId, summary) {
   msgEl.style.setProperty('filter', 'blur(10px)', 'important');
   msgEl.style.setProperty('user-select', 'none', 'important');
   msgEl.style.setProperty('pointer-events', 'none', 'important');
+
+  // 부모 컨테이너(article/turn)에 차단 마커 → CSS로 복사/공유/수정 버튼 숨김
+  blockParentContainer(msgEl);
 
   const state = messageStates.get(msgId);
   if (state && state.banner) {
@@ -205,15 +214,9 @@ export function markMessageDanger(msgEl, msgId, summary) {
         </div>
       </div>
       <div class="asm-danger-actions">
-        <button class="asm-btn asm-btn-reveal" data-msg-id="${msgId}">무시하고 표시</button>
+        <span class="asm-blocked-label">🚫 이 응답은 보안 위협으로 인해 차단되었습니다</span>
       </div>
     `);
-    const revealBtn = state.banner.querySelector('.asm-btn-reveal');
-    if (revealBtn) {
-      revealBtn.addEventListener('click', () => {
-        removeMessageBlur(msgEl, msgId);
-      });
-    }
   }
   messageStates.set(msgId, { ...(state || {}), state: 'danger' });
 }
@@ -234,6 +237,9 @@ export function applyPendingBlur(blurTarget, blockId) {
   blurTarget.setAttribute('data-asm-blur', 'pending');
   // 클래스도 함께 (구버전 호환)
   blurTarget.classList.add('asm-blur-pending');
+
+  // 분석 중에 액션 버튼 숨김
+  blockParentContainer(blurTarget);
 
   blockStates.set(blockId, {
     state: 'pending',
@@ -290,17 +296,59 @@ export function applyAnalysisResult(blockId, result) {
       handleDanger(blurTarget, blockId, category, reason, threats, details, result.redactionCount || 0);
       break;
     default:
-      // unknown / error → 블러 해제하되 경고
-      removeBlur(blurTarget);
-      blockStates.set(blockId, { ...blockState, state: 'error' });
+      // unknown / error → fail-closed: 자동 노출하지 않고 사용자 확인을 요구한다.
+      // (서버 다운/타임아웃 시 미검증 코드를 그대로 보여주면 보안 도구의 의미가 없음)
+      handleError(blurTarget, blockId, reason);
       break;
   }
+}
+
+// ─── unknown/error: 분석 실패 → fail-closed (블러 유지 + 직접 확인 버튼) ───
+
+function handleError(blurTarget, blockId, reason) {
+  // 분석에 실패해도 코드를 자동으로 노출하지 않는다. 블러를 유지하고,
+  // 사용자가 위험을 감수하고 직접 "확인하고 보기"를 눌렀을 때만 해제한다.
+  blurTarget.setAttribute('data-asm-blur', 'pending');
+  blurTarget.classList.add('asm-blur-pending');
+  blockParentContainer(blurTarget);
+
+  const banner = document.createElement('div');
+  banner.className = 'asm-result-banner asm-result-caution';
+  banner.setAttribute('data-asm-banner', blockId);
+  setSafeHTML(banner, `
+    <div class="asm-banner-inner">
+      <span class="asm-banner-icon">❓</span>
+      <div class="asm-banner-detail">
+        <strong>분석 실패</strong> — ${escapeHtml(reason || '보안 분석을 완료하지 못했습니다.')} 안전을 확인하지 못해 코드를 가린 상태로 둡니다.
+      </div>
+      <button class="asm-reveal-btn asm-dismiss-btn" title="직접 확인 후 표시">확인하고 보기</button>
+    </div>
+  `);
+
+  if (!safeInsertBefore(banner, blurTarget)) {
+    // 배너 삽입에 실패해도 자동 노출하지 않고 블러만 유지
+    blockStates.set(blockId, { ...(blockStates.get(blockId) || {}), state: 'error', blurTarget, overlay: null });
+    return;
+  }
+
+  const revealBtn = banner.querySelector('.asm-reveal-btn');
+  if (revealBtn) {
+    revealBtn.addEventListener('click', () => {
+      removeBlur(blurTarget);
+      unblockParentContainer(blurTarget);
+      banner.classList.add('asm-fade-out');
+      setTimeout(() => { if (banner.parentElement) banner.remove(); }, 300);
+    });
+  }
+
+  blockStates.set(blockId, { state: 'error', blurTarget, overlay: banner });
 }
 
 // ─── safe: 블러 해제 + 안전 뱃지 ────────────────────────────
 
 function handleSafe(blurTarget, blockId, category, reason) {
   removeBlur(blurTarget);
+  unblockParentContainer(blurTarget);
 
   const badge = document.createElement('div');
   badge.className = 'asm-result-banner asm-result-safe';
@@ -327,14 +375,15 @@ function handleSafe(blurTarget, blockId, category, reason) {
 // ─── caution: 블러 해제 + 경고 배너 유지 ─────────────────────
 
 function handleCaution(blurTarget, blockId, category, reason, threats, details, redactionCount) {
+  // caution은 블러 없이 경고 배너만 표시 (코드는 볼 수 있음)
   removeBlur(blurTarget);
+  unblockParentContainer(blurTarget);
 
   const intent = (details && details.intent) || '';
   const confidence = details && typeof details.confidence === 'number' ? details.confidence : null;
   const confidenceHtml = confidence !== null
     ? `<span class="asm-confidence-badge asm-confidence-caution">${Math.round(confidence * 100)}%</span>`
     : '';
-  const evidenceHtml = buildEvidenceHtml(threats);
 
   const banner = document.createElement('div');
   banner.className = 'asm-result-banner asm-result-caution';
@@ -344,27 +393,64 @@ function handleCaution(blurTarget, blockId, category, reason, threats, details, 
       <span class="asm-banner-icon">⚠️</span>
       <div class="asm-banner-detail">
         <div class="asm-banner-title-row">
-          <strong>주의</strong> — ${escapeHtml(category)}
+          <strong>주의가 필요한 코드입니다</strong> — ${escapeHtml(category)}
           ${confidenceHtml}
         </div>
         ${intent ? `<p class="asm-banner-intent">${escapeHtml(intent)}</p>` : ''}
         <p class="asm-banner-reason">${escapeHtml(reason)}</p>
-        ${evidenceHtml}
       </div>
       <button class="asm-dismiss-btn" title="닫기">✕</button>
     </div>
   `);
 
-  if (!safeInsertBefore(banner, blurTarget)) return;
+  // 배너 닫기 버튼
+  const inserted = safeInsertBefore(banner, blurTarget);
+  if (!inserted) return;
+  const dismissBtn = banner.querySelector('.asm-dismiss-btn');
+  if (dismissBtn) {
+    dismissBtn.addEventListener('click', () => {
+      banner.classList.add('asm-fade-out');
+      setTimeout(() => { if (banner.parentElement) banner.remove(); }, 300);
+    });
+  }
   blockStates.set(blockId, { state: 'caution', blurTarget, overlay: banner });
+}
 
-  banner.querySelector('.asm-dismiss-btn').addEventListener('click', () => {
-    banner.classList.add('asm-fade-out');
-    setTimeout(() => { if (banner.parentElement) banner.remove(); }, 300);
-  });
+/**
+ * 주의(caution) 차단 블록들을 해제 — 후속 분석에서 안전 판정 후 호출
+ */
+export function releaseCautionBlocks() {
+  for (const [blockId, bs] of blockStates.entries()) {
+    if (bs.state !== 'caution-blocked') continue;
 
-  setupEvidenceToggle(banner);
-  addDeanonymizeToggle(banner, blockId, { riskLevel: 'caution', category, reason, details, redactionCount });
+    const { blurTarget, overlay } = bs;
+
+    // 블러 해제
+    removeBlur(blurTarget);
+    blurTarget.classList.remove('asm-blur-caution');
+
+    // 배너를 경고로 전환
+    if (overlay && overlay.parentElement) {
+      setSafeHTML(overlay, `
+        <div class="asm-banner-inner">
+          <span class="asm-banner-icon">⚠️</span>
+          <div class="asm-banner-detail">
+            <strong>주의</strong> — 후속 대화 분석 결과 위험하지 않은 것으로 판단되어 차단이 해제되었습니다.
+          </div>
+          <button class="asm-dismiss-btn" title="닫기">✕</button>
+        </div>
+      `);
+      const dismissBtn = overlay.querySelector('.asm-dismiss-btn');
+      if (dismissBtn) {
+        dismissBtn.addEventListener('click', () => {
+          overlay.classList.add('asm-fade-out');
+          setTimeout(() => { if (overlay.parentElement) overlay.remove(); }, 300);
+        });
+      }
+    }
+
+    blockStates.set(blockId, { ...bs, state: 'caution-released' });
+  }
 }
 
 // ─── danger: 블러 유지 + 차단 오버레이 + 확인 버튼 ───────────
@@ -375,12 +461,14 @@ function handleDanger(blurTarget, blockId, category, reason, threats, details, r
   blurTarget.classList.remove('asm-blur-pending');
   blurTarget.classList.add('asm-blur-danger');
 
+  // 부모 컨테이너의 복사/공유/수정 버튼 차단
+  blockParentContainer(blurTarget);
+
   const intent = (details && details.intent) || '';
   const confidence = details && typeof details.confidence === 'number' ? details.confidence : null;
   const confidenceHtml = confidence !== null
     ? `<span class="asm-confidence-badge asm-confidence-danger">${Math.round(confidence * 100)}%</span>`
     : '';
-  const evidenceHtml = buildEvidenceHtml(threats);
 
   const overlay = document.createElement('div');
   overlay.className = 'asm-result-banner asm-result-danger';
@@ -399,101 +487,16 @@ function handleDanger(blurTarget, blockId, category, reason, threats, details, r
           <span class="asm-intent-text">${escapeHtml(intent)}</span>
         </div>` : ''}
         <p class="asm-banner-reason">${escapeHtml(reason)}</p>
-        ${evidenceHtml}
       </div>
     </div>
     <div class="asm-danger-actions">
-      <button class="asm-btn asm-btn-block">차단 유지</button>
-      <button class="asm-btn asm-btn-reveal">코드 보기 (위험 감수)</button>
+      <span class="asm-blocked-label">🚫 이 코드는 보안 위협으로 인해 영구 차단되었습니다</span>
     </div>
   `);
 
   if (!safeInsertBefore(overlay, blurTarget)) return;
-  blockStates.set(blockId, { state: 'danger', blurTarget, overlay });
-
-  // 차단 유지 버튼
-  overlay.querySelector('.asm-btn-block').addEventListener('click', () => {
-    blurTarget.style.display = 'none';
-    setSafeHTML(
-      overlay.querySelector('.asm-danger-actions'),
-      '<span class="asm-blocked-label">🚫 차단됨</span>'
-    );
-    blockStates.set(blockId, { ...blockStates.get(blockId), state: 'blocked' });
-  });
-
-  // 코드 보기 버튼 → 2단계 확인
-  overlay.querySelector('.asm-btn-reveal').addEventListener('click', () => {
-    const actionsEl = overlay.querySelector('.asm-danger-actions');
-    setSafeHTML(actionsEl, `
-      <div class="asm-confirm-box">
-        <p class="asm-confirm-text">⚠️ 이 코드는 <strong>${escapeHtml(category)}</strong> 위협이 감지된 코드입니다. 정말 표시하시겠습니까?</p>
-        <div class="asm-confirm-buttons">
-          <button class="asm-btn asm-btn-cancel">취소</button>
-          <button class="asm-btn asm-btn-confirm-reveal">네, 표시합니다</button>
-        </div>
-      </div>
-    `);
-    actionsEl.querySelector('.asm-btn-cancel').addEventListener('click', () => {
-      setSafeHTML(actionsEl, `
-        <button class="asm-btn asm-btn-block">차단 유지</button>
-        <button class="asm-btn asm-btn-reveal">코드 보기 (위험 감수)</button>
-      `);
-      // 이벤트 재등록
-      rebindDangerActions(overlay, blurTarget, blockId, category);
-    });
-    actionsEl.querySelector('.asm-btn-confirm-reveal').addEventListener('click', () => {
-      removeBlur(blurTarget);
-      setSafeHTML(actionsEl, '<span class="asm-revealed-label">⚠️ 사용자가 표시를 허용했습니다</span>');
-      blockStates.set(blockId, { ...blockStates.get(blockId), state: 'revealed' });
-    });
-  });
-
-  setupEvidenceToggle(overlay);
-  addDeanonymizeToggle(overlay, blockId, { riskLevel: 'danger', category, reason, details, redactionCount });
-}
-
-/**
- * danger 오버레이 버튼 이벤트 재바인딩 (2단계 확인에서 취소 후)
- */
-function rebindDangerActions(overlay, blurTarget, blockId, category) {
-  const blockBtn = overlay.querySelector('.asm-btn-block');
-  const revealBtn = overlay.querySelector('.asm-btn-reveal');
-  if (blockBtn) {
-    blockBtn.addEventListener('click', () => {
-      blurTarget.style.display = 'none';
-      setSafeHTML(
-        overlay.querySelector('.asm-danger-actions'),
-        '<span class="asm-blocked-label">🚫 차단됨</span>'
-      );
-      blockStates.set(blockId, { ...blockStates.get(blockId), state: 'blocked' });
-    });
-  }
-  if (revealBtn) {
-    revealBtn.addEventListener('click', () => {
-      const actionsEl = overlay.querySelector('.asm-danger-actions');
-      setSafeHTML(actionsEl, `
-        <div class="asm-confirm-box">
-          <p class="asm-confirm-text">⚠️ 이 코드는 <strong>${escapeHtml(category)}</strong> 위협이 감지된 코드입니다. 정말 표시하시겠습니까?</p>
-          <div class="asm-confirm-buttons">
-            <button class="asm-btn asm-btn-cancel">취소</button>
-            <button class="asm-btn asm-btn-confirm-reveal">네, 표시합니다</button>
-          </div>
-        </div>
-      `);
-      actionsEl.querySelector('.asm-btn-cancel').addEventListener('click', () => {
-        setSafeHTML(actionsEl, `
-          <button class="asm-btn asm-btn-block">차단 유지</button>
-          <button class="asm-btn asm-btn-reveal">코드 보기 (위험 감수)</button>
-        `);
-        rebindDangerActions(overlay, blurTarget, blockId, category);
-      });
-      actionsEl.querySelector('.asm-btn-confirm-reveal').addEventListener('click', () => {
-        removeBlur(blurTarget);
-        setSafeHTML(actionsEl, '<span class="asm-revealed-label">⚠️ 사용자가 표시를 허용했습니다</span>');
-        blockStates.set(blockId, { ...blockStates.get(blockId), state: 'revealed' });
-      });
-    });
-  }
+  blurTarget.style.display = 'none';
+  blockStates.set(blockId, { state: 'blocked', blurTarget, overlay });
 }
 
 // ─── 유틸리티 ────────────────────────────────────────────────
@@ -664,6 +667,147 @@ function createScanningBanner(blockId) {
     </div>
   `);
   return banner;
+}
+
+/**
+ * 위험 차단 시 부모 컨테이너의 액션 버튼(복사/공유/수정) 숨김 + 클립보드 차단
+ *
+ * ChatGPT는 스트리밍 완료 후에 액션 버튼을 추가하므로, 블러 시점에 버튼이
+ * 아직 DOM에 없을 수 있다. 따라서 document 레벨 MutationObserver로
+ * 지속적으로 감시하여 새 버튼이 나타나면 즉시 숨긴다.
+ */
+
+// 차단된 컨테이너 추적
+const blockedContainers = new Set();
+let _globalBtnObserver = null;
+
+function blockParentContainer(el) {
+  const container = findTurnContainer(el);
+  if (!container) return;
+
+  // 이미 처리된 컨테이너면 버튼 숨김만 재실행
+  if (container.getAttribute('data-asm-blocked') === 'true') {
+    hideActionButtons(container);
+    return;
+  }
+
+  container.setAttribute('data-asm-blocked', 'true');
+  blockedContainers.add(container);
+
+  // 즉시 숨김
+  hideActionButtons(container);
+
+  // 클립보드 복사 이벤트 차단
+  container.addEventListener('copy', blockCopyHandler, true);
+  container.addEventListener('cut', blockCopyHandler, true);
+  container.addEventListener('keydown', blockCopyKeyHandler, true);
+
+  // document 레벨 글로벌 옵저버 시작 (한 번만)
+  startGlobalButtonObserver();
+}
+
+/**
+ * 메시지를 감싸는 최상위 턴 컨테이너를 찾는다.
+ * ChatGPT의 article, Claude/Gemini의 메시지 래퍼 등.
+ */
+function findTurnContainer(el) {
+  // 1. 구체적 셀렉터로 탐색
+  const specific = el.closest([
+    'article[data-testid^="conversation-turn"]',  // ChatGPT
+    'article',                                     // ChatGPT fallback
+    '.font-claude-message',                        // Claude
+    'model-response',                              // Gemini
+    '.response-container-content',                 // Gemini
+  ].join(', '));
+  if (specific) return specific;
+
+  // 2. fallback: 부모를 6단계까지 올라감
+  let target = el;
+  for (let i = 0; i < 6 && target.parentElement; i++) {
+    target = target.parentElement;
+  }
+  return target;
+}
+
+/**
+ * document 레벨 MutationObserver — DOM 변경 시 차단 컨테이너 내 버튼을 숨김.
+ * ChatGPT가 스트리밍 완료 후 나중에 버튼을 추가해도 잡아냄.
+ */
+function startGlobalButtonObserver() {
+  if (_globalBtnObserver) return; // 이미 시작됨
+
+  _globalBtnObserver = new MutationObserver(() => {
+    for (const container of blockedContainers) {
+      // 컨테이너가 DOM에서 제거됐으면 Set에서도 삭제
+      if (!container.isConnected) {
+        blockedContainers.delete(container);
+        continue;
+      }
+      if (container.getAttribute('data-asm-blocked') === 'true') {
+        hideActionButtons(container);
+      }
+    }
+    // 차단 컨테이너가 없으면 옵저버 중지
+    if (blockedContainers.size === 0) {
+      _globalBtnObserver.disconnect();
+      _globalBtnObserver = null;
+    }
+  });
+
+  _globalBtnObserver.observe(document.body, { childList: true, subtree: true });
+}
+
+/**
+ * 컨테이너 내 AI 서비스 액션 버튼(복사/공유/수정/좋아요 등)을 직접 숨김
+ * 우리 배너(asm-) 내부 버튼은 제외
+ */
+function hideActionButtons(container) {
+  const buttons = container.querySelectorAll('button, [role="button"]');
+  for (const btn of buttons) {
+    // 우리 확장 프로그램의 버튼은 스킵
+    if (btn.className && btn.className.includes && btn.className.includes('asm-')) continue;
+    if (btn.closest && btn.closest('[data-asm-banner], [data-asm-msg-banner], .asm-result-banner')) continue;
+    // 이미 숨겨진 버튼은 스킵
+    if (btn.style.display === 'none') continue;
+    btn.style.setProperty('display', 'none', 'important');
+    btn.style.setProperty('pointer-events', 'none', 'important');
+  }
+}
+
+/**
+ * 안전 판정 시 부모 컨테이너의 차단 해제 — 숨긴 버튼 복원 + 이벤트 핸들러 제거
+ */
+function unblockParentContainer(el) {
+  const container = el.closest('[data-asm-blocked="true"]');
+  if (!container) return;
+
+  container.removeAttribute('data-asm-blocked');
+  blockedContainers.delete(container);
+
+  // 숨겼던 버튼 복원
+  const buttons = container.querySelectorAll('button, [role="button"]');
+  for (const btn of buttons) {
+    if (btn.className && btn.className.includes && btn.className.includes('asm-')) continue;
+    btn.style.removeProperty('display');
+    btn.style.removeProperty('pointer-events');
+  }
+
+  // 이벤트 핸들러 제거
+  container.removeEventListener('copy', blockCopyHandler, true);
+  container.removeEventListener('cut', blockCopyHandler, true);
+  container.removeEventListener('keydown', blockCopyKeyHandler, true);
+}
+
+function blockCopyHandler(e) {
+  e.preventDefault();
+  e.stopPropagation();
+}
+
+function blockCopyKeyHandler(e) {
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C')) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
 }
 
 /**

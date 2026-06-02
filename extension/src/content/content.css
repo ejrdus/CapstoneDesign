@@ -24,12 +24,22 @@
   position: relative;
 }
 
-/* 자손까지 확실히 흐리게 (filter는 자손까지 시각적으로 적용되지만,
-   syntax-highlight 자식이 별도 filter를 가질 가능성을 차단) */
+[data-asm-blur="caution"],
+.asm-blur-caution {
+  filter: blur(8px) !important;
+  user-select: none !important;
+  pointer-events: none !important;
+  transition: filter 0.3s ease;
+  position: relative;
+}
+
+/* 자손까지 확실히 흐리게 */
 [data-asm-blur="pending"] *,
 [data-asm-blur="danger"] *,
+[data-asm-blur="caution"] *,
 .asm-blur-pending *,
-.asm-blur-danger * {
+.asm-blur-danger *,
+.asm-blur-caution * {
   filter: none !important;
 }
 
@@ -37,12 +47,16 @@
 
 .asm-result-banner {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: 13px !important;
+  line-height: 1.5 !important;
   border-radius: 6px 6px 0 0;
   overflow: hidden;
   transition: opacity 0.3s ease, transform 0.3s ease;
   z-index: 10000;
+  width: 100% !important;
+  min-width: 400px !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
 }
 
 .asm-banner-inner {
@@ -126,6 +140,13 @@
   gap: 8px;
   padding: 8px 14px 12px;
   background: rgba(239, 68, 68, 0.05);
+}
+
+.asm-caution-actions {
+  display: flex;
+  gap: 8px;
+  padding: 8px 14px 12px;
+  background: rgba(245, 158, 11, 0.05);
 }
 
 /* ─── 버튼 ───────────────────────────────────────────────────── */
@@ -377,6 +398,25 @@
 
 .asm-btn-confirm-reveal:hover {
   background: #b91c1c;
+}
+
+/* ─── 위험 차단 시 AI 서비스 액션 버튼 숨김 ─────────────────────── */
+
+/* 차단된 메시지의 부모 컨테이너 내 모든 버튼 숨김 (우리 배너 제외) */
+[data-asm-blocked="true"] button:not([class*="asm-"]),
+[data-asm-blocked="true"] [role="button"]:not([class*="asm-"]),
+[data-asm-blocked="true"] [data-testid*="copy"],
+[data-asm-blocked="true"] [data-testid*="share"],
+[data-asm-blocked="true"] [data-testid*="edit"],
+[data-asm-blocked="true"] [data-testid*="action"] {
+  display: none !important;
+  pointer-events: none !important;
+}
+
+/* 차단 컨테이너 전체에서 텍스트 선택/복사 방지 */
+[data-asm-blocked="true"] {
+  user-select: none !important;
+  -webkit-user-select: none !important;
 }
 
 /* ─── 페이드아웃 애니메이션 ───────────────────────────────────── */

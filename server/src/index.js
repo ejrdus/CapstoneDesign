@@ -6,12 +6,18 @@ const analyzeRoute = require('./routes/analyze');
 const adminRoute = require('./routes/admin');
 const errorHandler = require('./middleware/errorHandler');
 const rateLimit = require('./middleware/rateLimit');
+const { analyzeLimiter } = require('./middleware/rateLimit');
+const { apiKeyGate } = require('./middleware/apiKey');
 
 // DB 초기화 (모듈 로드 시 자동 실행)
 require('./database');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// 프록시 뒤 배포 시 req.ip 정확도를 위해 신뢰할 프록시 홉 수 설정.
+// 기본 0(미신뢰) — nginx 등 뒤에 두면 .env에 TRUST_PROXY=1 설정.
+app.set('trust proxy', Number(process.env.TRUST_PROXY) || 0);
 
 // 미들웨어
 app.use(cors());
@@ -25,7 +31,8 @@ app.use((req, res, next) => {
 });
 
 // 라우트
-app.use('/api/analyze', analyzeRoute);
+// /api/analyze는 유료 LLM 호출을 유발하므로 전용 레이트리밋 + (선택적) API키 게이트 적용
+app.use('/api/analyze', analyzeLimiter, apiKeyGate, analyzeRoute);
 app.use('/api/admin', adminRoute);
 
 // 관리자 페이지 정적 파일 서빙

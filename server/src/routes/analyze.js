@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { validateAnalyzeRequest } = require('../utils/validator');
+const { validateAnalyzeRequest, normalizeLanguage } = require('../utils/validator');
 const { preprocessCode } = require('../utils/codePreprocessor');
 const { anonymize, logRedactions } = require('../utils/anonymizer');
 const { prefilter } = require('../utils/prefilter');
@@ -22,7 +22,8 @@ router.post('/', async (req, res, next) => {
       return res.status(400).json({ error: validation.message });
     }
 
-    const { code, language, aiService } = req.body;
+    const { code, aiService, sessionId } = req.body;
+    const language = normalizeLanguage(req.body.language); // python3→python 등 별칭 정규화
 
     // 2. 코드 전처리
     const cleanCode = preprocessCode(code);
@@ -56,7 +57,18 @@ router.post('/', async (req, res, next) => {
       const llmResult = await analyzeWithLLM(anonymizedCode, language);
 
       // 4. 단일 코드 블록 위험도 판정
-      const riskResult = classifyRisk(llmResult);
+      //    LLM이 분석을 거부(refused)하면 = 분석기가 거부할 만큼 위험한 코드 → danger로 확정
+      let riskResult;
+      if (llmResult.refused) {
+        riskResult = {
+          riskLevel: 'danger',
+          category: 'LLM 분석 거부 (고위험)',
+          reason: 'LLM이 안전상의 이유로 분석을 거부했습니다 — 분석기가 거부할 정도로 위험한 코드로 간주하여 차단합니다.',
+          details: { ...llmResult },
+        };
+      } else {
+        riskResult = classifyRisk(llmResult);
+      }
 
       result = {
         riskLevel: riskResult.riskLevel,
@@ -68,8 +80,9 @@ router.post('/', async (req, res, next) => {
     }
 
     // 5. 세션 누적 분석 (다단계 공격 체인 탐지)
-    recordAnalysis(req.ip, aiService, result);
-    const sessionHistory = getSessionHistory(req.ip, aiService);
+    //    conversationId(sessionId) 우선 — NAT 환경에서 IP 충돌 방지
+    recordAnalysis(sessionId, req.ip, aiService, result);
+    const sessionHistory = getSessionHistory(sessionId, req.ip, aiService);
     const chainDetection = detectAttackChain(sessionHistory);
 
     if (chainDetection) {
@@ -80,29 +93,25 @@ router.post('/', async (req, res, next) => {
         broadPatternDetected: chainDetection.broadPattern,
       };
 
-      // 세션 컨텍스트가 위험하면 단일 분석 결과를 강화
-      const sessionEscalated = chainDetection.matchedPatterns.length > 0 || chainDetection.broadPattern;
-      if (sessionEscalated) {
-        const sessionReason = chainDetection.matchedPatterns.length > 0
-          ? `이 대화에서 누적된 위협이 공격 체인 패턴(${chainDetection.matchedPatterns.map((p) => p.name).join(', ')})과 일치합니다.`
-          : `이 대화에서 ${chainDetection.seenTypes.length}개의 서로 다른 위협 유형이 누적 탐지되었습니다.`;
-
-        if (result.riskLevel === 'safe') {
-          // 현재 코드는 깨끗해도 누적 패턴이 위험하면 caution으로 강등
-          result.riskLevel = 'caution';
-          result.category = '대화 누적 위협';
-          result.reason = `[세션 누적 분석] ${sessionReason}`;
-        } else {
-          // 이미 caution/danger면 reason에 세션 정보만 부기
-          result.reason = `${result.reason} [세션 누적: ${sessionReason}]`;
-        }
-
+      const matchedChains = chainDetection.matchedPatterns;
+      if (matchedChains.length > 0 || chainDetection.broadPattern) {
         console.log(
           `[Session] history=${chainDetection.historyLength} `
           + `types=[${chainDetection.seenTypes.join(',')}] `
-          + `chains=[${chainDetection.matchedPatterns.map((p) => p.name).join(',') || 'none'}] `
+          + `chains=[${matchedChains.map((p) => p.name).join(',') || 'none'}] `
           + `broad=${chainDetection.broadPattern}`,
         );
+      }
+
+      // 다단계 공격 체인 에스컬레이션 — 개별 블록은 caution으로 강등됐어도, 세션에 누적된
+      // 위협들이 알려진 공격 체인(랜섬웨어/RCE/유출/백도어)을 이루면 danger로 승격한다.
+      // (broadPattern 단독은 노이즈가 많아 승격하지 않고 참고 정보로만 둔다)
+      if (matchedChains.length > 0 && result.riskLevel === 'caution') {
+        const chainNames = matchedChains.map((p) => p.name).join(', ');
+        result.riskLevel = 'danger';
+        result.reason += ` [다단계 공격 체인 탐지: ${chainNames} — 세션 누적 위협으로 위험도 승격]`;
+        result.sessionContext.escalated = true;
+        console.log(`[Session] riskLevel 승격 caution→danger (chains: ${chainNames})`);
       }
     }
 
@@ -119,7 +128,7 @@ router.post('/', async (req, res, next) => {
         result.category,
         result.reason,
         JSON.stringify(result.details),
-        req.ip
+        db.hashIp(req.ip)
       );
     } catch (dbErr) {
       console.error('[DB] 로그 저장 실패:', dbErr.message);
@@ -154,7 +163,7 @@ router.post('/batch', async (req, res, next) => {
     // 블록별 전처리 + 비식별화 + 사전필터
     const prepared = blocks.map((b) => {
       const id = String(b.id);
-      const language = b.language;
+      const language = normalizeLanguage(b.language); // 별칭 정규화 (python3→python 등)
       const cleanCode = preprocessCode(b.code || '');
       const { anonymized, replacements } = anonymize(cleanCode);
       logRedactions(replacements);
@@ -172,6 +181,13 @@ router.post('/batch', async (req, res, next) => {
       );
     }
     const llmById = new Map(llmResults.map((r) => [String(r.blockId), r]));
+
+    // LLM이 일부 블록을 누락/재정렬했는지 확인 — 조용히 누락되면 'unknown' fallback이
+    // 나가므로, 운영 가시성을 위해 명시적으로 경고 로깅한다.
+    const missingIds = llmTargets.filter((p) => !llmById.has(p.id)).map((p) => p.id);
+    if (missingIds.length > 0) {
+      console.warn(`[Batch] LLM 응답 누락 blockIds=[${missingIds.join(',')}] (요청 ${llmTargets.length}건 중 ${missingIds.length}건 누락)`);
+    }
 
     // 최종 결과 조립
     const results = prepared.map((p) => {
@@ -226,7 +242,7 @@ router.post('/batch', async (req, res, next) => {
           result.category,
           result.reason,
           JSON.stringify(result.details),
-          req.ip
+          db.hashIp(req.ip)
         );
       } catch (dbErr) {
         console.error('[DB] 배치 로그 저장 실패:', dbErr.message);

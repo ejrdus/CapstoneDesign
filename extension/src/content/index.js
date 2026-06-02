@@ -27,6 +27,12 @@ import { detectAIService } from '../utils/constants';
 
 const currentAIService = detectAIService();
 
+// 대화창(세션) 식별자 — 서버의 다단계 공격 체인 탐지가 IP 대신 이 값으로 세션을
+// 구분한다(NAT/프록시 환경에서 IP 공유로 인한 세션 충돌 방지). 페이지 로드 단위 UUID.
+const conversationId = (self.crypto && self.crypto.randomUUID)
+  ? self.crypto.randomUUID()
+  : `conv-${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
+
 // ─── 메시지 단위 블러 상태 관리 ───────────────────────────────
 const messageStates = new Map();
 const blockToMessage = new Map();
@@ -90,9 +96,16 @@ function rescanMessageBlocks(msgId) {
   const codeElements = liveMsg.querySelectorAll('pre, code');
   console.log('[ASM-DEBUG] rescan 요소 수:', codeElements.length);
 
+  // <pre><code> 중복 방지: <pre> 안의 <code>는 스킵 (같은 텍스트 2번 분석 방지)
+  const analyzedTexts = new Set();
+  let analysisStarted = false;
+
   for (const el of codeElements) {
     // 우리 확장의 배너/오버레이 내부 요소는 스킵
     if (el.closest && el.closest('[data-asm-banner], [data-asm-msg-banner], .asm-result-banner')) continue;
+
+    // <code>가 <pre> 안에 있으면 <pre>에서 이미 처리되므로 스킵
+    if (el.tagName === 'CODE' && el.parentElement && el.parentElement.tagName === 'PRE') continue;
 
     // 이미 제대로 분석된 블록은 스킵
     const existingId = el.getAttribute('data-asm-id');
@@ -102,15 +115,18 @@ function rescanMessageBlocks(msgId) {
     const code = (el.textContent || '').trim();
     if (code.length < 10) continue; // 짧은 헤더/라벨 무시
 
+    // 같은 메시지 내 동일 텍스트 중복 분석 방지
+    const codeHash = hashCode(code);
+    if (analyzedTexts.has(codeHash)) continue;
+    analyzedTexts.add(codeHash);
+
     console.log('[ASM-DEBUG] rescan 분석 대상 발견:', code.length, 'chars');
 
     // blockId 부여 (없으면 생성)
     let blockId = existingId;
     if (!blockId) {
-      blockId = 'asm-rescan-' + Date.now();
+      blockId = 'asm-rescan-' + Date.now() + '-' + analyzedTexts.size;
       el.setAttribute('data-asm-id', blockId);
-    } else {
-      lockedBlocks.delete(blockId);
     }
 
     // 블록을 메시지에 등록 → 분석 완료 시 notifyBlockAnalyzed가 블러 해제
@@ -122,10 +138,13 @@ function rescanMessageBlocks(msgId) {
 
     const lang = detectLanguageFromElement(el);
     executeAnalysis(blockId, code, lang);
-    return true; // 분석 시작됨
+    analysisStarted = true;
   }
-  console.log('[ASM-DEBUG] rescan: 분석할 코드 블록 없음');
-  return false;
+
+  if (!analysisStarted) {
+    console.log('[ASM-DEBUG] rescan: 분석할 코드 블록 없음');
+  }
+  return analysisStarted;
 }
 
 function detectLanguageFromElement(el) {
@@ -207,6 +226,31 @@ const properlyAnalyzed = new Set();
 
 const DEBOUNCE_MS = 800;
 
+// ─── 영구 차단 블록리스트 (danger 판정 코드 영구 저장) ────────
+const BLOCKLIST_KEY = 'asm-blocklist';
+
+async function getBlocklist() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(BLOCKLIST_KEY, (data) => {
+      resolve(data[BLOCKLIST_KEY] || {});
+    });
+  });
+}
+
+function addToBlocklist(codeHash, result) {
+  chrome.storage.local.get(BLOCKLIST_KEY, (data) => {
+    const blocklist = data[BLOCKLIST_KEY] || {};
+    blocklist[codeHash] = {
+      riskLevel: result.riskLevel,
+      category: result.category,
+      reason: result.reason,
+      details: result.details,
+      blockedAt: Date.now(),
+    };
+    chrome.storage.local.set({ [BLOCKLIST_KEY]: blocklist });
+  });
+}
+
 // ─── 분석 결과 캐싱 ─────────────────────────────────────────
 const CACHE_PREFIX = 'asm-cache-';
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -265,10 +309,9 @@ function scheduleAnalysis(blockId, code, language, blurTarget, element) {
 async function executeAnalysis(blockId, code, language) {
   if (lockedBlocks.has(blockId)) return;
 
-  // 너무 짧은 코드 — 스트리밍 중일 수 있음. 블러만 해제하고 rescan에서 다시 시도.
+  // 너무 짧은 코드 — 스트리밍 중일 수 있음. 블러 해제하되 잠그지 않음 (나중에 내용이 채워지면 재분석)
   if (!code || code.trim().length < 5) {
     console.log('[ASM-DEBUG] executeAnalysis 짧은 코드 스킵:', blockId, 'len=' + (code ? code.trim().length : 0));
-    lockedBlocks.add(blockId);
     applyAnalysisResult(blockId, { riskLevel: 'safe', _noBanner: true });
     notifyBlockAnalyzed(blockId, { riskLevel: 'safe' });
     return;
@@ -278,6 +321,20 @@ async function executeAnalysis(blockId, code, language) {
   const detectedLang = language !== 'unknown' ? language : detectLanguage(code);
 
   console.log('[ASM-DEBUG] executeAnalysis 분석 시작:', blockId, 'len=' + code.trim().length, 'hash=' + codeHash);
+
+  // 영구 차단 블록리스트 확인 (danger 판정된 코드는 영구 차단)
+  const blocklist = await getBlocklist();
+  if (blocklist[codeHash]) {
+    console.log('[ASM-DEBUG] 블록리스트 히트 (영구 차단):', blockId);
+    const blockedResult = blocklist[codeHash];
+    lockedBlocks.add(blockId);
+    properlyAnalyzed.add(blockId);
+    analyzedHashes.add(codeHash);
+    applyAnalysisResult(blockId, blockedResult);
+    notifyBlockAnalyzed(blockId, blockedResult);
+    sendUpdateStatus(blockedResult, detectedLang, blockId);
+    return;
+  }
 
   // 동일 코드 중복 분석 방지
   if (analyzedHashes.has(codeHash)) {
@@ -299,6 +356,7 @@ async function executeAnalysis(blockId, code, language) {
     applyAnalysisResult(blockId, cached);
     notifyBlockAnalyzed(blockId, cached);
     sendUpdateStatus(cached, detectedLang, blockId);
+
     return;
   }
 
@@ -307,7 +365,7 @@ async function executeAnalysis(blockId, code, language) {
     console.log('[ASM-DEBUG] 서버 분석 요청:', blockId);
     const response = await chrome.runtime.sendMessage({
       type: 'ANALYZE_CODE',
-      payload: { code, language: detectedLang, blockId, aiService: currentAIService },
+      payload: { code, language: detectedLang, blockId, aiService: currentAIService, sessionId: conversationId },
     });
 
     if (response && response.error) {
@@ -326,12 +384,17 @@ async function executeAnalysis(blockId, code, language) {
         debounceTimers.delete(blockId);
       }
       setCachedResult(codeHash, response);
+      // danger 판정은 영구 차단 블록리스트에 저장
+      if (response.riskLevel === 'danger') {
+        addToBlocklist(codeHash, response);
+      }
     }
 
     properlyAnalyzed.add(blockId);
     applyAnalysisResult(blockId, response);
     notifyBlockAnalyzed(blockId, response);
     sendUpdateStatus(response, detectedLang, blockId);
+
   } catch (error) {
     console.error('[AI Script Monitor] 분석 오류:', error);
     const errResult = { riskLevel: 'unknown', category: '통신 오류', reason: '서버 연결에 실패했습니다.' };
@@ -353,24 +416,69 @@ function hashCode(str) {
 
 // ─── 초기화 ──────────────────────────────────────────────────
 
-observeAssistantMessages(handleNewMessage, handleMessageMutation);
+let _loadedBlocklist = {};
 
-const initialBlocks = extractNewCodeBlocks();
-initialBlocks.forEach((block) => {
-  registerBlockForMessage(block.blockId, block.element);
-  scheduleAnalysis(block.blockId, block.code, block.language, block.blurTarget, block.element);
+function tryBlocklistBlock(block) {
+  if (!block.code || block.code.trim().length < 10) return false;
+  const codeHash = hashCode(block.code);
+  const entry = _loadedBlocklist[codeHash];
+  if (!entry) return false;
+  console.log('[ASM] 블록리스트 즉시 차단:', block.blockId, 'hash=' + codeHash);
+  lockedBlocks.add(block.blockId);
+  properlyAnalyzed.add(block.blockId);
+  analyzedHashes.add(codeHash);
+  applyAnalysisResult(block.blockId, entry);
+  return true;
+}
+
+// 블록리스트를 로드하고 초기 블록 처리
+getBlocklist().then((blocklist) => {
+  _loadedBlocklist = blocklist;
+  const count = Object.keys(blocklist).length;
+  if (count > 0) console.log('[ASM] 블록리스트 로드:', count, '개');
+
+  // 이미 DOM에 있는 코드 블록 스캔 (페이지 로드 시점)
+  const initialBlocks = extractNewCodeBlocks();
+  for (const block of initialBlocks) {
+    if (tryBlocklistBlock(block)) continue;
+    registerBlockForMessage(block.blockId, block.element);
+    scheduleAnalysis(block.blockId, block.code, block.language, block.blurTarget, block.element);
+  }
 });
+
+// 메시지/코드 옵저버는 즉시 시작 (블록리스트 로드 전에도 블러는 적용)
+observeAssistantMessages(handleNewMessage, handleMessageMutation);
 
 observeCodeBlocks(
   (block) => {
+    // 블록리스트 우선 확인 (비동기 로드 완료 후에는 즉시 차단)
+    if (tryBlocklistBlock(block)) return;
     registerBlockForMessage(block.blockId, block.element);
+    // 스트리밍 중인 메시지의 코드 블록은 등록만 하고 분석은 하지 않음.
+    // 스트리밍이 끝나면 idle 타이머 → rescanMessageBlocks에서 완성된 코드로 분석.
+    // 이렇게 해야 불완전한 코드로 먼저 분석(safe) → 완성 후 재분석(caution)으로
+    // 결과가 뒤바뀌는 현상을 방지할 수 있다.
+    const msgId = blockToMessage.get(block.blockId);
+    const msgState = msgId && messageStates.get(msgId);
+    const isLiveMessage = msgState && !msgState.settled;
+    if (isLiveMessage) {
+      console.log('[ASM-DEBUG] 스트리밍 중 — 분석 보류:', block.blockId);
+      return;
+    }
     scheduleAnalysis(block.blockId, block.code, block.language, block.blurTarget, block.element);
   },
   (blockId, newCode, element) => {
+    // 스트리밍 중인 메시지의 블록은 업데이트도 보류 (rescan에서 처리)
+    const msgId = blockToMessage.get(blockId);
+    const msgState = msgId && messageStates.get(msgId);
+    if (msgState && !msgState.settled) return;
+
+    // 내용 업데이트 — 이전에 짧아서 스킵됐거나 내용이 바뀐 경우 재분석
+    lockedBlocks.delete(blockId);
     const existing = latestCodeMap.get(blockId);
-    if (existing) {
-      scheduleAnalysis(blockId, newCode, existing.language, existing.blurTarget, element);
-    }
+    const lang = existing ? existing.language : 'unknown';
+    const bt = existing ? existing.blurTarget : element;
+    scheduleAnalysis(blockId, newCode, lang, bt, element);
   }
 );
 
